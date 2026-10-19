@@ -178,7 +178,12 @@ clean up processes and buffers on errors and keyboard quit."
   "Insert unified differences for FILES from REV1 to REV2 into BUFFER.
 Nil revisions mean have revision and working contents respectively.
 This initial implementation is synchronous with bounded P4 retrieval."
-  (let ((destination (get-buffer-create (or buffer "*vc-diff*"))) (result 0))
+  (let ((destination (get-buffer-create (or buffer "*vc-diff*")))
+        (inhibit-read-only t)
+        (result 0))
+    ;; Consumers reuse their diff buffer.  Clear it once per fileset so a
+    ;; later clean result cannot leave old gutter hunks behind.
+    (with-current-buffer destination (erase-buffer))
     (dolist (file files)
       (let ((old (make-temp-file "vc-p4-old-")) (new (make-temp-file "vc-p4-new-")))
         (unwind-protect

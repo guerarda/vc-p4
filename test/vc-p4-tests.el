@@ -136,3 +136,14 @@
         (should (= calls 3))))))
 
 (provide 'vc-p4-tests)
+
+(ert-deftest vc-p4-diff-refresh-removes-stale-hunks ()
+  (vc-p4-test-with-file "changed\n"
+    (cl-letf (((symbol-function 'vc-p4-working-revision) (lambda (_) "1"))
+              ((symbol-function 'vc-p4--base) (lambda (&rest _) "original\n")))
+      (with-temp-buffer
+        (vc-p4-diff (list file) nil nil (current-buffer))
+        (should (> (buffer-size) 0))
+        (with-temp-file file (insert "original\n"))
+        (should (= 0 (vc-p4-diff (list file) nil nil (current-buffer))))
+        (should (= 0 (buffer-size)))))))
