@@ -46,3 +46,10 @@
     (let ((file (vc-p4-integration-file name)))
       (should (vc-p4-registered file))
       (should (eq (vc-p4-state file) 'up-to-date)))))
+
+(ert-deftest vc-p4-real-server-content-baselines ()
+  (dolist (name '("unicode.txt" "crlf.txt" "no-newline.txt" "binary.dat"))
+    (let ((file (vc-p4-integration-file name)))
+      (should (eq (vc-p4-state file) 'up-to-date))
+      (with-temp-buffer
+        (should (= 0 (vc-p4-diff (list file) nil nil (current-buffer))))))))

@@ -36,6 +36,8 @@ clean up processes and buffers on errors and keyboard quit."
         process)
     (unwind-protect
         (progn
+          (with-current-buffer out (set-buffer-multibyte nil))
+          (with-current-buffer err (set-buffer-multibyte nil))
           (setq process
                 (make-process :name "vc-p4" :buffer out :stderr err
                               :command (cons vc-p4-program args)

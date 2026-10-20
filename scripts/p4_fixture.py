@@ -119,7 +119,7 @@ def run_fixture(args):
                                 VC_P4_TEST_ROOT=str(root / "alice"),
                                 VC_P4_TEST_CASE=args.case_handling)
                 subprocess.run(
-                    [emacs, "-Q", "--batch", "-L", str(REPO), "-L", str(REPO / "test"),
+                    [emacs, "-Q", "--batch", "--eval", "(setq load-prefer-newer t)", "-L", str(REPO), "-L", str(REPO / "test"),
                      "-l", "vc-p4-integration-tests", "-f", "ert-run-tests-batch-and-exit"],
                     cwd=root, env=test_env, check=True, timeout=60)
             finally:

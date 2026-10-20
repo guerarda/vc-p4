@@ -147,3 +147,9 @@
         (with-temp-file file (insert "original\n"))
         (should (= 0 (vc-p4-diff (list file) nil nil (current-buffer))))
         (should (= 0 (buffer-size)))))))
+
+(ert-deftest vc-p4-process-preserves-non-ascii-bytes ()
+  (let ((vc-p4-program "/bin/sh"))
+    (let ((bytes (vc-p4--run temporary-file-directory "-c" "printf '\\303\\251\\000\\377'")))
+      (should-not (multibyte-string-p bytes))
+      (should (equal bytes (unibyte-string 195 169 0 255))))))
