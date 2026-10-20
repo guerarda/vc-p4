@@ -71,7 +71,7 @@ def run_fixture(args):
                         f"User: {user}\nEmail: {user}@example.invalid\nFullName: {user}\n"))
                     p4run("client", "-i", user=user, text=(
                         f"Client: {user}-client\nOwner: {user}\nRoot: {workspace}\n"
-                        "Options: noallwrite noclobber nocompress unlocked nomodtime normdir\n"
+                        f"Options: {'noallwrite' if user == 'alice' else 'allwrite'} noclobber nocompress unlocked nomodtime normdir\n"
                         "LineEnd: local\nView:\n"
                         f"\t//depot/... //{user}-client/...\n"
                         f"\t-//depot/excluded/... //{user}-client/excluded/...\n"))
@@ -79,6 +79,10 @@ def run_fixture(args):
                 alice_file.write_text("one\ntwo\nthree\n", encoding="utf-8")
                 initial_files = {
                     "clean.txt": b"unchanged\n",
+                    "exclusive.txt": b"exclusive\n",
+                    "conflict.txt": b"original\n",
+                    "stale.txt": b"original\n",
+                    "café.txt": b"unicode path\n",
                     "gutter.txt": b"one\ntwo\nthree\n",
                     "opened.txt": b"unchanged\n",
                     "unopened.txt": b"original\n",
@@ -97,12 +101,21 @@ def run_fixture(args):
                     path.write_bytes(contents)
                     p4run("add", "-f", str(path))
                 p4run("add", str(alice_file))
+                p4run("reopen", "-t", "text+l", str(root / "alice" / "exclusive.txt"))
                 p4run("submit", "-d", "fixture: initial contents")
                 p4run("sync", "//depot/...", user="bob")
                 bob_file = root / "bob" / "sample.txt"
                 p4run("edit", str(bob_file), user="bob")
                 bob_file.write_text("one\nnew depot line\nthree\n", encoding="utf-8")
+                for name in ("conflict.txt", "stale.txt"):
+                    path = root / "bob" / name
+                    p4run("edit", str(path), user="bob")
+                    path.write_text("depot edit\n")
                 p4run("submit", "-d", "fixture: advance depot head", user="bob")
+                conflict = root / "alice" / "conflict.txt"
+                p4run("edit", str(conflict))
+                conflict.write_text("local conflict\n")
+                p4run("sync", str(conflict))
                 p4run("edit", str(alice_file))
                 alice_file.write_text("one\nlocal edit\nthree\n", encoding="utf-8")
                 # Local lifecycle states, with no submission of these changes.

@@ -33,7 +33,8 @@
     (should (string-match-p "noallwrite" (alist-get 'Options client)))))
 
 (ert-deftest vc-p4-real-server-lifecycle-states ()
-  (dolist (entry '(("clean.txt" . up-to-date) ("opened.txt" . up-to-date)
+  (dolist (entry '(("conflict.txt" . conflict) ("stale.txt" . needs-update)
+                   ("clean.txt" . up-to-date) ("opened.txt" . up-to-date)
                    ("unopened.txt" . edited) ("missing.txt" . missing)
                    ("deleted.txt" . removed) ("moved.txt" . removed)
                    ("renamed.txt" . added) ("added.txt" . added)))
@@ -42,7 +43,7 @@
       (should (eq (vc-p4-state file) (cdr entry))))))
 
 (ert-deftest vc-p4-real-server-special-paths ()
-  (dolist (name '("space name.txt" "special#@%.txt"))
+  (dolist (name '("space name.txt" "special#@%.txt" "café.txt"))
     (let ((file (vc-p4-integration-file name)))
       (should (vc-p4-registered file))
       (should (eq (vc-p4-state file) 'up-to-date)))))
@@ -69,3 +70,12 @@
     (make-directory (file-name-directory file) t)
     (should-not (vc-p4-responsible-p file))
     (should-not (vc-p4-registered file))))
+
+(ert-deftest vc-p4-real-server-checkout-models ()
+  (should (eq (vc-p4-checkout-model (list (vc-p4-integration-file "exclusive.txt"))) 'locking))
+  (should (eq (vc-p4-checkout-model (list (vc-p4-integration-file "clean.txt"))) 'announce))
+  (let ((process-environment (copy-sequence process-environment)))
+    (setenv "P4CLIENT" "bob-client")
+    (setenv "P4USER" "bob")
+    (let ((file (expand-file-name "../bob/clean.txt" (getenv "VC_P4_TEST_ROOT"))))
+      (should (eq (vc-p4-checkout-model (list file)) 'implicit)))))

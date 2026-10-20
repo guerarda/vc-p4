@@ -137,7 +137,25 @@ P4CONFIG candidate, so creating a nearer configuration invalidates caches."
       (error (setq vc-p4-last-error (error-message-string err)) nil))))
 
 (defun vc-p4-revision-granularity () "Use per-file revisions." 'file)
-(defun vc-p4-checkout-model (_files) "P4 normally requires explicit checkout." 'announce)
+(defun vc-p4-checkout-model (files)
+  "Return the editing model for FILES in their current workspace."
+  (if (null files) 'announce
+    (if (cl-some (lambda (file)
+                   (let* ((stat (vc-p4--stat file))
+                          (type (or (alist-get 'type stat) (alist-get 'headType stat) "")))
+                     (string-match-p "+[^+]*l" type))) files)
+        'locking
+      (let* ((file (car files))
+             (key (list 'client (vc-p4--context file)))
+             (entry (gethash key vc-p4--metadata))
+             (spec (if (and entry (< (- (float-time) (car entry)) vc-p4-metadata-ttl))
+                       (cdr entry)
+                     (let ((value (car (vc-p4--query (file-name-directory (expand-file-name file))
+                                                    "client" "-o"))))
+                       (puthash key (cons (float-time) value) vc-p4--metadata)
+                       value))))
+        (if (member "allwrite" (split-string (or (alist-get 'Options spec) "")))
+            'implicit 'announce)))))
 (defun vc-p4-working-revision (file)
   "Return the synced revision of FILE, or zero for an addition."
   (let ((stat (vc-p4--stat file)))
@@ -211,7 +229,8 @@ P4CONFIG candidate, so creating a nearer configuration invalidates caches."
                          (string-to-number (alist-get 'headRev stat))))))
     (cond ((member action '("add" "move/add")) 'added)
           ((member action '("delete" "move/delete")) 'removed)
-          ((> (string-to-number (or (alist-get 'unresolved stat) "0")) 0) 'conflict)
+          ((and (assq 'unresolved stat)
+                (not (equal (alist-get 'unresolved stat) "0"))) 'conflict)
           ((not (file-exists-p file)) 'missing)
           ((not (equal (vc-p4--local-bytes file)
                        (vc-p4--base file (vc-p4-working-revision file))))
