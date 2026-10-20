@@ -32,27 +32,44 @@ Emacs must inherit the P4 environment/configuration needed by the CLI. Run
 
 ## Installation
 
-Place this repository on disk and add it to your Emacs configuration, replacing
-`/path/to/p4vc` with its location:
+Use Emacs 30's built-in `use-package` and `:vc` support to install from
+[GitHub](https://github.com/guerarda/p4vc). Git must be available on Emacs's
+`exec-path`.
 
 ```elisp
-(add-to-list 'load-path "/path/to/p4vc")
-(require 'vc-p4)
+(use-package vc-p4
+  :vc (:url "https://github.com/guerarda/p4vc.git"
+       :rev :newest)
+  ;; Uncomment if p4 is not on Emacs's exec-path:
+  ;; :custom (vc-p4-program "/path/to/p4")
+  :demand t)
 
-;; Optional: set this if p4 is not on Emacs's exec-path.
-;; (setq vc-p4-program "/path/to/p4")
-
-(require 'diff-hl)
-(setq diff-hl-update-async nil)
-(global-diff-hl-mode 1)
+(use-package diff-hl
+  :ensure t
+  :demand t
+  :custom
+  (diff-hl-update-async nil)
+  :config
+  (global-diff-hl-mode 1))
 ```
 
-For unsaved-buffer highlighting, also enable flydiff:
+`:rev :newest` selects the latest commit when installing. The backend is loaded
+eagerly so that VC can discover Perforce files. `diff-hl` is installed from your
+configured package archives.
+
+For unsaved-buffer highlighting, add:
 
 ```elisp
-(require 'diff-hl-flydiff)
-(diff-hl-flydiff-mode 1)
+(use-package diff-hl-flydiff
+  :ensure nil                         ; Included with diff-hl.
+  :after diff-hl
+  :config
+  (diff-hl-flydiff-mode 1))
 ```
+
+The current backend still waits for P4 queries; disabling async updates does
+not prevent those waits. Non-blocking operation is required before the package
+is recommended for everyday use.
 
 ## Usage
 
