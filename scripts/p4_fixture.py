@@ -47,7 +47,7 @@ def run_fixture(args):
 
         with (root / "server-output").open("w") as output:
             process = subprocess.Popen(
-                [p4d, "-r", str(server), "-p", port, "-L", str(root / "server.log"),
+                [p4d, "-C1" if args.case_handling == "insensitive" else "-C0", "-r", str(server), "-p", port, "-L", str(root / "server.log"),
                  "-J", str(root / "journal")], cwd=root, env=env,
                 stdout=output, stderr=subprocess.STDOUT)
             try:
@@ -72,10 +72,28 @@ def run_fixture(args):
                     p4run("client", "-i", user=user, text=(
                         f"Client: {user}-client\nOwner: {user}\nRoot: {workspace}\n"
                         "Options: noallwrite noclobber nocompress unlocked nomodtime normdir\n"
-                        "LineEnd: unix\nView:\n"
+                        "LineEnd: local\nView:\n"
                         f"\t//depot/... //{user}-client/...\n"))
                 alice_file = root / "alice" / "sample.txt"
                 alice_file.write_text("one\ntwo\nthree\n", encoding="utf-8")
+                initial_files = {
+                    "clean.txt": b"unchanged\n",
+                    "opened.txt": b"unchanged\n",
+                    "unopened.txt": b"original\n",
+                    "missing.txt": b"missing later\n",
+                    "deleted.txt": b"deleted later\n",
+                    "moved.txt": b"moved later\n",
+                    "space name.txt": b"spaces\n",
+                    "special#@%.txt": b"special\n",
+                    "unicode.txt": "café\nλ\n".encode(),
+                    "crlf.txt": b"one\r\ntwo\r\n",
+                    "no-newline.txt": b"last line",
+                    "binary.dat": bytes(range(256)),
+                }
+                for name, contents in initial_files.items():
+                    path = root / "alice" / name
+                    path.write_bytes(contents)
+                    p4run("add", "-f", str(path))
                 p4run("add", str(alice_file))
                 p4run("submit", "-d", "fixture: initial contents")
                 p4run("sync", "//depot/...", user="bob")
@@ -85,7 +103,21 @@ def run_fixture(args):
                 p4run("submit", "-d", "fixture: advance depot head", user="bob")
                 p4run("edit", str(alice_file))
                 alice_file.write_text("one\nlocal edit\nthree\n", encoding="utf-8")
-                test_env = dict(env, VC_P4_TEST_FILE=str(alice_file), VC_P4_PROGRAM=p4)
+                # Local lifecycle states, with no submission of these changes.
+                p4run("edit", str(root / "alice" / "opened.txt"))
+                unopened = root / "alice" / "unopened.txt"
+                unopened.chmod(0o644)
+                unopened.write_text("unopened edit\n")
+                (root / "alice" / "missing.txt").unlink()
+                p4run("delete", str(root / "alice" / "deleted.txt"))
+                p4run("edit", str(root / "alice" / "moved.txt"))
+                p4run("move", str(root / "alice" / "moved.txt"),
+                      str(root / "alice" / "renamed.txt"))
+                (root / "alice" / "added.txt").write_text("new file\n")
+                p4run("add", str(root / "alice" / "added.txt"))
+                test_env = dict(env, VC_P4_TEST_FILE=str(alice_file), VC_P4_PROGRAM=p4,
+                                VC_P4_TEST_ROOT=str(root / "alice"),
+                                VC_P4_TEST_CASE=args.case_handling)
                 subprocess.run(
                     [emacs, "-Q", "--batch", "-L", str(REPO), "-L", str(REPO / "test"),
                      "-l", "vc-p4-integration-tests", "-f", "ert-run-tests-batch-and-exit"],
@@ -106,6 +138,7 @@ def main():
     parser.add_argument("--p4", default="p4")
     parser.add_argument("--p4d", default="p4d")
     parser.add_argument("--emacs", default="emacs")
+    parser.add_argument("--case-handling", choices=("insensitive", "sensitive"), default="insensitive")
     args = parser.parse_args()
     try:
         run_fixture(args)
