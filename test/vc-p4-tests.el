@@ -153,3 +153,19 @@
     (let ((bytes (vc-p4--run temporary-file-directory "-c" "printf '\\303\\251\\000\\377'")))
       (should-not (multibyte-string-p bytes))
       (should (equal bytes (unibyte-string 195 169 0 255))))))
+
+(ert-deftest vc-p4-cache-context-tracks-config-edits ()
+  (let* ((dir (make-temp-file "vc-p4-config-" t))
+         (process-environment (copy-sequence process-environment))
+         (file (expand-file-name "file.txt" dir))
+         (config (expand-file-name ".p4config" dir)))
+    (unwind-protect
+        (progn
+          (setenv "P4CONFIG" ".p4config")
+          (let ((before (vc-p4--context file)))
+            (with-temp-file config (insert "P4CLIENT=first\n"))
+            (should-not (equal before (vc-p4--context file))))
+          (let ((first (vc-p4--context file)))
+            (with-temp-file config (insert "P4CLIENT=another-client\n"))
+            (should-not (equal first (vc-p4--context file)))))
+      (delete-directory dir t))))

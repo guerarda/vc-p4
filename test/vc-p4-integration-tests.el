@@ -55,3 +55,17 @@
         (should (= 0 (vc-p4-diff (list file) nil nil (current-buffer))))))))
 
 (provide 'vc-p4-integration-tests)
+
+(ert-deftest vc-p4-real-server-root-and-new-file-discovery ()
+  (let* ((dir (file-name-as-directory (getenv "VC_P4_TEST_ROOT")))
+         (default-directory dir))
+    (should (equal (vc-p4-root "clean.txt") dir))
+    (should (equal (vc-p4-root dir) dir))
+    (should (equal (vc-p4-responsible-p (expand-file-name "new.txt" dir)) dir))
+    (should-not (vc-p4-registered (expand-file-name "new.txt" dir)))))
+
+(ert-deftest vc-p4-real-server-excluded-mapping ()
+  (let ((file (vc-p4-integration-file "excluded/file.txt")))
+    (make-directory (file-name-directory file) t)
+    (should-not (vc-p4-responsible-p file))
+    (should-not (vc-p4-registered file))))

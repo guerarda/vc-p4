@@ -73,7 +73,8 @@ def run_fixture(args):
                         f"Client: {user}-client\nOwner: {user}\nRoot: {workspace}\n"
                         "Options: noallwrite noclobber nocompress unlocked nomodtime normdir\n"
                         "LineEnd: local\nView:\n"
-                        f"\t//depot/... //{user}-client/...\n"))
+                        f"\t//depot/... //{user}-client/...\n"
+                        f"\t-//depot/excluded/... //{user}-client/excluded/...\n"))
                 alice_file = root / "alice" / "sample.txt"
                 alice_file.write_text("one\ntwo\nthree\n", encoding="utf-8")
                 initial_files = {

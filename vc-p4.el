@@ -85,10 +85,34 @@ clean up processes and buffers on errors and keyboard quit."
       (setq result (string-replace (car pair) (cdr pair) result)))
     result))
 
+(defun vc-p4--config-signature (file)
+  "Return local configuration file identities affecting FILE.
+Use attributes rather than parsing credentials.  Include every ancestor
+P4CONFIG candidate, so creating a nearer configuration invalidates caches."
+  (let ((directory (file-name-directory (expand-file-name file)))
+        (name (getenv "P4CONFIG"))
+        (paths (list (expand-file-name (or (getenv "P4ENVIRO") "~/.p4enviro")))))
+    (when (and name (not (string-empty-p name)))
+      (if (file-name-absolute-p name)
+          (push name paths)
+        (while directory
+          (push (expand-file-name name directory) paths)
+          (let ((parent (file-name-directory (directory-file-name directory))))
+            (setq directory (unless (equal parent directory) parent))))))
+    (mapcar (lambda (path)
+              (let ((attrs (file-attributes path 'string)))
+                (list path (file-attribute-size attrs)
+                      (file-attribute-modification-time attrs)
+                      (file-attribute-status-change-time attrs)
+                      (file-attribute-inode-number attrs))))
+            paths)))
+
 (defun vc-p4--context (file)
-  "Return a cache context for FILE and the effective P4 environment."
+  "Return a cache context for FILE and its effective P4 configuration."
   (list (file-name-directory (expand-file-name file)) vc-p4-program
-        (mapcar #'getenv '("P4PORT" "P4CLIENT" "P4USER" "P4CONFIG" "P4CHARSET"))))
+        (mapcar #'getenv '("P4PORT" "P4CLIENT" "P4USER" "P4CONFIG" "P4CHARSET"
+                          "P4ENVIRO" "P4HOST" "P4TICKETS" "P4TRUST"))
+        (vc-p4--config-signature file)))
 
 (defun vc-p4--stat (file &optional fresh)
   "Return cached fstat metadata for FILE, bypassing cache when FRESH."
@@ -122,14 +146,27 @@ clean up processes and buffers on errors and keyboard quit."
 
 (defun vc-p4-root (file)
   "Return the P4 workspace root for FILE if its mapping is valid."
-  (condition-case nil
-      (let* ((directory (if (file-directory-p file) file (file-name-directory file)))
-             (mapping (car (vc-p4--query directory "where" (vc-p4--escape file))))
-             (info (and (alist-get 'path mapping) (not (alist-get 'unmap mapping))
-                        (car (vc-p4--query directory "info")))))
-        (when-let ((root (alist-get 'clientRoot info)))
-          (unless (equal root "null") (file-name-as-directory root))))
-    (error nil)))
+  (unless (file-remote-p file)
+    (condition-case nil
+        (let* ((file (expand-file-name file))
+               (directory (if (file-directory-p file) file (file-name-directory file)))
+               (spec (concat (vc-p4--escape file)
+                             (when (file-directory-p file)
+                               (if (string-suffix-p "/" file) "..." "/..."))))
+               (mappings (vc-p4--query directory "where" spec))
+               (effective (make-hash-table :test #'equal))
+               mapped)
+          ;; Later mappings override the same path.  An excluded child does
+          ;; not exclude the entire parent directory's wildcard mapping.
+          (dolist (mapping mappings)
+            (when-let* ((path (alist-get 'path mapping)))
+              (puthash path (not (assq 'unmap mapping)) effective)))
+          (maphash (lambda (_path included) (when included (setq mapped t))) effective)
+          (when mapped
+            (let ((root (alist-get 'clientRoot (car (vc-p4--query directory "info")))))
+              (when (and root (not (equal root "null")))
+                (file-name-as-directory root)))))
+      (error nil))))
 (defun vc-p4-responsible-p (file) "Return workspace responsibility for FILE." (vc-p4-root file))
 
 (defun vc-p4--revision-spec (revision)
