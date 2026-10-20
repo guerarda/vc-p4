@@ -43,7 +43,12 @@ clean up processes and buffers on errors and keyboard quit."
                               :command (cons vc-p4-program args)
                               :connection-type 'pipe :coding 'no-conversion
                               :noquery t :sentinel #'ignore))
-          (process-send-eof process)
+          ;; Fast queries may finish before stdin is closed.  Their exit
+          ;; status and captured output still need normal handling below.
+          (condition-case err
+              (process-send-eof process)
+            (error (when (process-live-p process)
+                     (signal (car err) (cdr err)))))
           (let ((deadline (+ (float-time) vc-p4-command-timeout)))
             (while (process-live-p process)
               (when (> (float-time) deadline)

@@ -54,6 +54,17 @@
                                "test" "a b; $(false) * # @")
                    "a b; $(false) * # @"))))
 
+(ert-deftest vc-p4-process-exits-before-stdin-closes ()
+  (let ((vc-p4-program "/bin/sh")
+        (send-eof (symbol-function 'process-send-eof)))
+    (cl-letf (((symbol-function 'process-send-eof)
+               (lambda (process)
+                 (while (process-live-p process)
+                   (accept-process-output process 0.01))
+                 (funcall send-eof process))))
+      (should (equal (vc-p4--run temporary-file-directory "-c" "printf done")
+                     "done")))))
+
 (ert-deftest vc-p4-process-keeps-stderr-out-of-content ()
   (let ((vc-p4-program "/bin/sh"))
     (should (equal (vc-p4--run temporary-file-directory "-c"
