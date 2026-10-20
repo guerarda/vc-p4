@@ -86,3 +86,47 @@
           (should (equal (vc-p4-gutter-hunks) '((2 change)))))
       (kill-buffer buffer)
       (vc-file-clearprops file))))
+
+(ert-deftest vc-p4-real-gutter-warm-flydiff-does-not-query-server ()
+  (vc-p4-gutter-with-file
+    (let ((vc-p4-metadata-ttl 60))
+      (unwind-protect
+          (progn
+            (diff-hl-flydiff-mode 1)
+            (goto-char (point-min)) (insert "first\n")
+            (diff-hl-update)
+            (cl-letf (((symbol-function 'vc-p4--run)
+                       (lambda (&rest _) (ert-fail "Warm typing queried P4"))))
+              (insert "second\n") (diff-hl-update)
+              (should (vc-p4-gutter-hunks))))
+        (diff-hl-flydiff-mode -1)))))
+
+(ert-deftest vc-p4-real-gutter-navigation-and-submit-refresh ()
+  (vc-p4-gutter-with-file
+    (goto-char (point-min)) (forward-line 1)
+    (delete-region (point) (line-end-position)) (insert "submitted")
+    (save-buffer) (diff-hl-update)
+    (goto-char (point-min))
+    (let ((diff-hl-next-previous-hunk-auto-recenter nil))
+      (diff-hl-next-hunk))
+    (should (= (line-number-at-pos) 2))
+    (vc-p4--run dir "submit" "-d" "gutter test submission" (vc-p4--escape file))
+    (vc-p4-refresh) (diff-hl-update)
+    (should (equal (vc-p4-working-revision file) "2"))
+    (should-not (vc-p4-gutter-hunks))
+    ;; Restore the base revision for other tests without undoing server history.
+    (vc-p4--run dir "sync" (concat (vc-p4--escape file) "#1"))
+    (revert-buffer t t) (vc-p4-refresh)
+    (should (eq (vc-state file) 'needs-update))
+    (should-not (vc-p4-gutter-hunks))))
+
+(ert-deftest vc-p4-real-gutter-added-file ()
+  (let* ((file (vc-p4-integration-file "added.txt"))
+         (buffer (find-file-noselect file))
+         (diff-hl-update-async nil))
+    (unwind-protect
+        (with-current-buffer buffer
+          (diff-hl-mode 1) (diff-hl-update)
+          (should (eq (vc-state file) 'added))
+          (should (eq (cadar (vc-p4-gutter-hunks)) 'insert)))
+      (kill-buffer buffer))))

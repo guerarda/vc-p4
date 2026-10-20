@@ -79,3 +79,9 @@
     (setenv "P4USER" "bob")
     (let ((file (expand-file-name "../bob/clean.txt" (getenv "VC_P4_TEST_ROOT"))))
       (should (eq (vc-p4-checkout-model (list file)) 'implicit)))))
+
+(ert-deftest vc-p4-real-server-case-variant-discovery ()
+  (when (equal (getenv "VC_P4_TEST_CASE") "insensitive")
+    (let ((file (vc-p4-integration-file "CLEAN.TXT")))
+      (should (vc-p4-registered file))
+      (should (equal (vc-p4-working-revision file) "1")))))

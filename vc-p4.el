@@ -238,6 +238,17 @@ P4CONFIG candidate, so creating a nearer configuration invalidates caches."
           (behind 'needs-update)
           (t 'up-to-date))))
 
+(defun vc-p4--after-save ()
+  "Invalidate P4 state before consumers run their after-save hooks.
+Emacs only invalidates up-to-date announce-model files by default; a
+needs-update file can also become locally edited when saved."
+  (when (and buffer-file-name
+             (eq (vc-file-getprop buffer-file-name 'vc-backend) 'P4))
+    (vc-file-setprop buffer-file-name 'vc-state nil)
+    (vc-file-setprop buffer-file-name 'vc-working-revision nil)))
+
+(add-hook 'after-save-hook #'vc-p4--after-save -90)
+
 (defun vc-p4--diff-hl-modified-p (state)
   "Let diff-hl display P4 edits that also need a merge.
 Some diff-hl versions only recognize edited/conflict.  Preserve accurate
