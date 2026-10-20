@@ -53,3 +53,5 @@
       (should (eq (vc-p4-state file) 'up-to-date))
       (with-temp-buffer
         (should (= 0 (vc-p4-diff (list file) nil nil (current-buffer))))))))
+
+(provide 'vc-p4-integration-tests)

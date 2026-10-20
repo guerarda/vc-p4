@@ -78,6 +78,7 @@ def run_fixture(args):
                 alice_file.write_text("one\ntwo\nthree\n", encoding="utf-8")
                 initial_files = {
                     "clean.txt": b"unchanged\n",
+                    "gutter.txt": b"one\ntwo\nthree\n",
                     "opened.txt": b"unchanged\n",
                     "unopened.txt": b"original\n",
                     "missing.txt": b"missing later\n",
@@ -118,9 +119,12 @@ def run_fixture(args):
                 test_env = dict(env, VC_P4_TEST_FILE=str(alice_file), VC_P4_PROGRAM=p4,
                                 VC_P4_TEST_ROOT=str(root / "alice"),
                                 VC_P4_TEST_CASE=args.case_handling)
+                extra_args = (["-L", str(Path(args.diff_hl_dir).resolve()),
+                               "-l", "vc-p4-gutter-integration-tests"]
+                              if args.diff_hl_dir else [])
                 subprocess.run(
                     [emacs, "-Q", "--batch", "--eval", "(setq load-prefer-newer t)", "-L", str(REPO), "-L", str(REPO / "test"),
-                     "-l", "vc-p4-integration-tests", "-f", "ert-run-tests-batch-and-exit"],
+                     "-l", "vc-p4-integration-tests", *extra_args, "-f", "ert-run-tests-batch-and-exit"],
                     cwd=root, env=test_env, check=True, timeout=60)
             finally:
                 process.terminate()
@@ -138,6 +142,7 @@ def main():
     parser.add_argument("--p4", default="p4")
     parser.add_argument("--p4d", default="p4d")
     parser.add_argument("--emacs", default="emacs")
+    parser.add_argument("--diff-hl-dir", help="Load real gutter integration tests from this diff-hl checkout")
     parser.add_argument("--case-handling", choices=("insensitive", "sensitive"), default="insensitive")
     args = parser.parse_args()
     try:
