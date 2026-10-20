@@ -85,3 +85,18 @@
     (let ((file (vc-p4-integration-file "CLEAN.TXT")))
       (should (vc-p4-registered file))
       (should (equal (vc-p4-working-revision file) "1")))))
+
+(ert-deftest vc-p4-real-server-binary-diff ()
+  (let* ((file (vc-p4-integration-file "binary.dat"))
+         (original (vc-p4--local-bytes file)))
+    (unwind-protect
+        (progn
+          (set-file-modes file #o644)
+          (let ((coding-system-for-write 'no-conversion))
+            (write-region (concat original "changed") nil file nil 'silent))
+          (with-temp-buffer
+            (should (= 1 (vc-p4-diff (list file) nil nil (current-buffer))))
+            (should-not (string-match-p "^@@" (buffer-string)))))
+      (let ((coding-system-for-write 'no-conversion))
+        (write-region original nil file nil 'silent))
+      (set-file-modes file #o444))))
