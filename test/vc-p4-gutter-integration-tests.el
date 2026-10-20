@@ -74,3 +74,15 @@
       (diff-hl-flydiff-mode -1))))
 
 (provide 'vc-p4-gutter-integration-tests)
+
+(ert-deftest vc-p4-real-gutter-behind-depot-head ()
+  (let* ((file (getenv "VC_P4_TEST_FILE"))
+         (buffer (find-file-noselect file))
+         (diff-hl-update-async nil))
+    (unwind-protect
+        (with-current-buffer buffer
+          (should (eq (vc-state file) 'needs-merge))
+          (diff-hl-mode 1) (diff-hl-update)
+          (should (equal (vc-p4-gutter-hunks) '((2 change)))))
+      (kill-buffer buffer)
+      (vc-file-clearprops file))))

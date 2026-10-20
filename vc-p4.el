@@ -203,15 +203,31 @@ P4CONFIG candidate, so creating a nearer configuration invalidates caches."
                       (insert-file-contents-literally file) (buffer-string))))
 
 (defun vc-p4-state (file)
-  "Return local VC state for FILE without hiding edits behind depot updates."
-  (let* ((stat (vc-p4--stat file t)) (action (alist-get 'action stat)))
+  "Return FILE's VC state, retaining depot freshness information."
+  (let* ((stat (vc-p4--stat file t))
+         (action (alist-get 'action stat))
+         (behind (and (alist-get 'haveRev stat) (alist-get 'headRev stat)
+                      (< (string-to-number (alist-get 'haveRev stat))
+                         (string-to-number (alist-get 'headRev stat))))))
     (cond ((member action '("add" "move/add")) 'added)
           ((member action '("delete" "move/delete")) 'removed)
-          ((alist-get 'unresolved stat) 'conflict)
+          ((> (string-to-number (or (alist-get 'unresolved stat) "0")) 0) 'conflict)
           ((not (file-exists-p file)) 'missing)
           ((not (equal (vc-p4--local-bytes file)
-                       (vc-p4--base file (vc-p4-working-revision file)))) 'edited)
+                       (vc-p4--base file (vc-p4-working-revision file))))
+           (if behind 'needs-merge 'edited))
+          (behind 'needs-update)
           (t 'up-to-date))))
+
+(defun vc-p4--diff-hl-modified-p (state)
+  "Let diff-hl display P4 edits that also need a merge.
+Some diff-hl versions only recognize edited/conflict.  Preserve accurate
+VC states while extending that predicate narrowly for P4 buffers."
+  (and (eq state 'needs-merge) buffer-file-name
+       (eq (vc-backend buffer-file-name) 'P4)))
+
+(with-eval-after-load 'diff-hl
+  (advice-add 'diff-hl-modified-p :before-until #'vc-p4--diff-hl-modified-p))
 
 (defun vc-p4-diff (files &optional rev1 rev2 buffer _async)
   "Insert unified differences for FILES from REV1 to REV2 into BUFFER.

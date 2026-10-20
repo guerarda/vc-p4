@@ -9,7 +9,7 @@
     (should (vc-p4-registered file))
     (should (equal (vc-p4-working-revision file) "1"))
     (should (equal (alist-get 'headRev (vc-p4--stat file t)) "2"))
-    (should (eq (vc-p4-state file) 'edited))
+    (should (eq (vc-p4-state file) 'needs-merge))
     (with-temp-buffer
       (vc-p4-find-revision file "1" (current-buffer))
       (should (equal (buffer-string) "one\ntwo\nthree\n")))

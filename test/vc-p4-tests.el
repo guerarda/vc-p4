@@ -95,7 +95,7 @@
                (lambda (&rest _) '((haveRev . "7") (headRev . "8"))))
               ((symbol-function 'vc-p4--base)
                (lambda (_ rev) (should (equal rev "7")) "original\n")))
-      (should (eq (vc-p4-state file) 'edited)))))
+      (should (eq (vc-p4-state file) 'needs-merge)))))
 
 (ert-deftest vc-p4-opened-unchanged-file-is-clean ()
   (vc-p4-test-with-file "original\n"
