@@ -1,51 +1,123 @@
 # vc-p4
 
-An experimental native Perforce backend for Emacs VC, targeting Emacs 30.1+.
-The first milestone is diff-hl highlighting against each file's synced revision.
+Perforce support for Emacs VC, with **diff-hl gutter highlighting** for local
+workspaces.
 
-## Current status
+Changes are compared with each file's synced Perforce revision (`#have`), so
+newer changes in the depot do not appear as your local edits. The backend uses
+the `p4` command-line client and integrates with Emacs's built-in VC interface.
 
-The M1 candidate has real-server and diff-hl tests on Emacs 30.2 and 31.1.
-It supports discovery, accurate have-revision state, byte-preserving pristine
-retrieval, unified diff, saved/unsaved gutters and explicit cache refresh.
-Workspace and GUI validation remains a separate smoke check.
+**Status: experimental.** Gutter highlighting and read-only VC operations are
+implemented. Continue using the P4 CLI for checkout, add, revert and submit;
+those operations are not yet implemented through VC.
 
-Checkout/add/revert/submit through VC remain unsupported. Use the P4 CLI for
-mutations. Cold queries are synchronous; disable diff-hl async updates. Windows,
-TRAMP, Unicode-mode servers, complex overlays and UTF-16 textual gutters are
-not validated/supported yet. See [DEVELOPMENT.md](DEVELOPMENT.md) for details.
+## Features
 
-## Development
+- Saved-file change, insertion and deletion markers through diff-hl.
+- Optional unsaved-buffer highlighting through diff-hl-flydiff.
+- Workspace discovery and VC states for local edits, additions, deletions,
+  missing files, outdated revisions and unresolved conflicts.
+- Pristine revision retrieval and unified diffs against the synced revision.
+- Cached revision contents and explicit refresh after external P4 commands.
 
-Requirements: Emacs 30.1+, GNU Make (or compatible make), and a `diff` executable
-supporting `--label`. Python 3.9+ and P4 binaries are needed for the server fixture.
+## Requirements
 
-```sh
-make check EMACS=/path/to/emacs
-make test-diff-hl EMACS=/path/to/emacs DIFF_HL_DIR=/path/to/diff-hl
-python3 scripts/p4_fixture.py --p4 /path/to/p4 --p4d /path/to/p4d --emacs /path/to/emacs
-```
+- Emacs 30.1 or later.
+- The `p4` CLI, configured and authenticated for your workspace.
+- diff-hl, installed separately, for gutter highlighting.
+- A `diff` executable on PATH that supports `--label`.
 
-`make check` byte-compiles with warnings treated as errors and runs 26 tests.
-`test-diff-hl` runs those plus three consumer tests (29 total). No tests use a
-personal P4 server. The Python fixture creates its own server, users and clients
-under a temporary directory, verifies the server root, and shuts it down on exit.
-Its initial history leaves Alice at revision 1 while Bob submits revision 2;
-Alice's local edit must still be compared with revision 1.
+Emacs must inherit the P4 environment/configuration needed by the CLI. Run
+`p4 info` from your workspace to check the selected server and client.
 
-For a local experimental installation (see [VALIDATION.md](VALIDATION.md) for
-the complete workspace checklist and rollback):
+## Installation
+
+Place this repository on disk and add it to your Emacs configuration, replacing
+`/path/to/p4vc` with its location:
 
 ```elisp
 (add-to-list 'load-path "/path/to/p4vc")
 (require 'vc-p4)
+
+;; Optional: set this if p4 is not on Emacs's exec-path.
+;; (setq vc-p4-program "/path/to/p4")
+
 (require 'diff-hl)
+(setq diff-hl-update-async nil)
 (global-diff-hl-mode 1)
-;; Optional unsaved-buffer highlighting:
+```
+
+For unsaved-buffer highlighting, also enable flydiff:
+
+```elisp
+(require 'diff-hl-flydiff)
 (diff-hl-flydiff-mode 1)
 ```
 
-Configure the P4 CLI as usual. Use `M-x vc-p4-refresh` after external workspace
-changes. Keep diff-hl async updates disabled for this initial prototype.
+## Usage
 
-See [DEVELOPMENT.md](DEVELOPMENT.md) for validation evidence and current limits.
+Open a versioned file in your Perforce workspace. If highlighting is not
+already enabled for the buffer, run `M-x diff-hl-mode`. In a workspace that
+requires checkout, use `p4 edit` before editing the file.
+
+Save an edit to see its gutter marker, or enable flydiff to see unsaved changes.
+Use `M-x diff-hl-next-hunk` and `M-x diff-hl-previous-hunk` to navigate changes.
+
+After an external `p4 sync`, `p4 revert` or `p4 submit`:
+
+1. Reload the buffer with `M-x revert-buffer` if its file changed on disk,
+   preserving any unsaved work first.
+2. Run `M-x vc-p4-refresh` to refresh VC state and clear backend caches.
+3. Run `M-x diff-hl-update` to refresh the gutter.
+
+For a guided check and uninstall instructions, see
+[the workspace smoke check](VALIDATION.md).
+
+## Limitations
+
+- Checkout, add, revert and submit through Emacs VC are not implemented yet.
+- P4 queries are synchronous. Keep `diff-hl-update-async` disabled. Cold queries
+  can wait up to `vc-p4-command-timeout` (10 seconds per command).
+- There is no background polling for external workspace changes.
+- Binary files and UTF-16 files do not produce textual gutter hunks. UTF-16
+  pristine revision retrieval preserves the original bytes.
+- Windows, TRAMP, Unicode-mode servers, streams and complex overlay mappings
+  have not been validated.
+
+Automated tests have run on macOS arm64 with Emacs 30.2 and 31.1, P4/P4D
+2024.2, and diff-hl 1.10.0, using classic workspaces with local line endings.
+See [development notes](DEVELOPMENT.md) for the exact matrix and remaining
+validation scope.
+
+## Troubleshooting
+
+If a file is not recognized, evaluate `(vc-backend buffer-file-name)` in its
+buffer; a recognized Perforce file should return `P4`. Check that Emacs can
+find the configured `vc-p4-program` and that the CLI selects the correct client.
+Inspect `vc-p4-last-error` for the most recent discovery failure.
+
+When reporting a problem, include Emacs, diff-hl and P4 versions, the expected
+behavior, and a small reproduction. Remove credentials and private server,
+user and path details from diagnostics.
+
+## Development
+
+Run the backend and diff-hl consumer tests with GNU Make (or a compatible make):
+
+```sh
+make check EMACS=/path/to/emacs
+make test-diff-hl EMACS=/path/to/emacs DIFF_HL_DIR=/path/to/diff-hl
+```
+
+For integration tests, supply Python 3.9+, `p4`, `p4d` and a diff-hl checkout:
+
+```sh
+python3 scripts/p4_fixture.py \
+  --p4 /path/to/p4 --p4d /path/to/p4d \
+  --emacs /path/to/emacs --diff-hl-dir /path/to/diff-hl
+```
+
+The fixture starts a disposable local server, seeds its own history and clients,
+and shuts down on exit. It does not use your existing server or project history.
+On macOS arm64, `python3 scripts/install_p4.py` installs checksum-pinned test
+binaries into the ignored `.tools/` directory.
