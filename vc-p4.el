@@ -256,8 +256,22 @@ VC states while extending that predicate narrowly for P4 buffers."
   (and (eq state 'needs-merge) buffer-file-name
        (eq (vc-backend buffer-file-name) 'P4)))
 
+(defun vc-p4--diff-hl-temp-name (original file revision &optional manual)
+  "Scope diff-hl's reference cache to the P4 configuration and depot path.
+ORIGINAL computes its usual name for FILE, REVISION and MANUAL.  A file
+revision alone is not unique across Perforce clients or servers."
+  (let ((name (funcall original file revision manual)))
+    (if (eq (vc-file-getprop file 'vc-backend) 'P4)
+        (concat name "-p4-"
+                (secure-hash 'sha256
+                             (prin1-to-string
+                              (list (vc-p4--context file)
+                                    (alist-get 'depotFile (vc-p4--stat file))))))
+      name)))
+
 (with-eval-after-load 'diff-hl
-  (advice-add 'diff-hl-modified-p :before-until #'vc-p4--diff-hl-modified-p))
+  (advice-add 'diff-hl-modified-p :before-until #'vc-p4--diff-hl-modified-p)
+  (advice-add 'diff-hl-make-temp-file-name :around #'vc-p4--diff-hl-temp-name))
 
 (defun vc-p4-diff (files &optional rev1 rev2 buffer _async)
   "Insert unified differences for FILES from REV1 to REV2 into BUFFER.

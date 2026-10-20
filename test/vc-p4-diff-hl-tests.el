@@ -3,6 +3,35 @@
 (require 'diff-hl)
 (require 'diff-hl-flydiff)
 
+(ert-deftest vc-p4-diff-hl-reference-cache-follows-workspace ()
+  (vc-p4-test-with-file "first\n"
+    (let ((temporary-file-directory (make-temp-file "vc-p4-reference-" t))
+          (context "first-client")
+          (depot "//depot/first")
+          (base "first\n")
+          buffer)
+      (unwind-protect
+          (cl-letf (((symbol-function 'vc-p4--context) (lambda (_) context))
+                    ((symbol-function 'vc-p4--stat)
+                     (lambda (&rest _) `((depotFile . ,depot) (haveRev . "1"))))
+                    ((symbol-function 'vc-p4--base) (lambda (&rest _) base)))
+            (setq buffer (find-file-noselect file))
+            (vc-file-setprop file 'vc-backend 'P4)
+            (let ((first (diff-hl-create-revision file "1")))
+              (should (equal (vc-p4--local-bytes first) "first\n"))
+              (setq context "second-client" base "second\n")
+              (let ((second (diff-hl-create-revision file "1")))
+                (should-not (equal first second))
+                (should (equal (vc-p4--local-bytes second) "second\n"))
+                ;; A server-side view edit can change the depot mapping
+                ;; without changing the local configuration or revision.
+                (setq depot "//depot/remapped" base "third\n")
+                (should (equal (vc-p4--local-bytes
+                                (diff-hl-create-revision file "1")) "third\n")))))
+        (when (buffer-live-p buffer) (kill-buffer buffer))
+        (vc-file-clearprops file)
+        (delete-directory temporary-file-directory t)))))
+
 (defun vc-p4-test-hunks ()
   "Return the actual gutter hunk types and line positions."
   (sort (delq nil (mapcar
