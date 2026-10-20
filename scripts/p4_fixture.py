@@ -91,6 +91,7 @@ def run_fixture(args):
                     "moved.txt": b"moved later\n",
                     "space name.txt": b"spaces\n",
                     "special#@%.txt": b"special\n",
+                    "utf16.txt": "hello\nworld\n".encode("utf-16"),
                     "unicode.txt": "café\nλ\n".encode(),
                     "crlf.txt": b"one\r\ntwo\r\n",
                     "no-newline.txt": b"last line",

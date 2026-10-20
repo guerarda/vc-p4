@@ -203,7 +203,7 @@ P4CONFIG candidate, so creating a nearer configuration invalidates caches."
            (cached (gethash key vc-p4--contents)))
       (or cached
           (let ((bytes (vc-p4--run (file-name-directory (expand-file-name file))
-                                  "print" "-q" (concat depot (vc-p4--revision-spec revision)))))
+                                  "print" "-q" "-o" "-" (concat depot (vc-p4--revision-spec revision)))))
             ;; Symbolic specifications can change without changing their name.
             (when (string-match-p "\\`[0-9]+\\'" revision)
               (puthash key bytes vc-p4--contents))
