@@ -214,10 +214,11 @@
 (defmacro vc-p4-test-async (&rest body)
   "Run BODY with an isolated asynchronous runner and guaranteed cleanup."
   (declare (indent 0))
-  `(let ((vc-p4--queue nil) (vc-p4--active nil)
+  `(let ((vc-p4--queue nil) (vc-p4--active nil) (vc-p4--diff-tasks nil)
          (vc-p4--dispatch-timer nil) (vc-p4-program "/bin/sh")
          (vc-p4-command-timeout 2) (vc-p4-max-processes 1))
      (unwind-protect (progn ,@body)
+       (dolist (task (copy-sequence vc-p4--diff-tasks)) (vc-p4--diff-finish task nil t))
        (dolist (job (append vc-p4--queue vc-p4--active)) (vc-p4--cancel job))
        (when vc-p4--dispatch-timer (cancel-timer vc-p4--dispatch-timer)))))
 
@@ -471,3 +472,48 @@
         (vc-p4--ensure-context)
         (should-not (vc-file-getprop file 'vc-backend))
         (should-not (vc-file-getprop file 'vc-state))))))
+
+(ert-deftest vc-p4-refresh-discards-legacy-cache-entries ()
+  (vc-p4-test-with-file "contents"
+    (puthash (list (vc-p4--context file) file)
+             (cons (float-time) '((haveRev . "1"))) vc-p4--metadata)
+    (puthash (list (vc-p4--context file) "//depot/file" "1")
+             "contents" vc-p4--contents)
+    (vc-p4--cancel-file-work file)
+    (vc-p4-refresh)
+    (should (= (hash-table-count vc-p4--metadata) 0))
+    (should (= (hash-table-count vc-p4--contents) 0))))
+
+(ert-deftest vc-p4-new-diff-revision-supersedes-without-error-backoff ()
+  (vc-p4-test-async
+    (vc-p4-test-with-file "contents"
+      (let ((output (generate-new-buffer " *p4-revision-test*")))
+        (unwind-protect
+            (with-temp-buffer
+              (setq buffer-file-name file)
+              (insert "contents")
+              (vc-file-setprop file 'vc-backend 'P4)
+              (vc-file-setprop file 'vc-state 'edited)
+              (vc-file-setprop file 'vc-working-revision "1")
+              (vc-p4-diff (list file) "1" nil output t)
+              (let ((old (car vc-p4--diff-tasks)))
+                (should (vc-p4--diff-valid-p old))
+                (vc-p4-diff (list file) "2" nil output t)
+                (should (vc-p4--diff-task-done old))
+                (should (equal (vc-p4--diff-task-rev1 (car vc-p4--diff-tasks)) "2"))
+                (should-not (buffer-local-value 'vc-p4--diff-failed-until output))))
+          (kill-buffer output)
+          (vc-file-clearprops file))))))
+
+(ert-deftest vc-p4-diff-disappearing-destination-cleans-without-hooks ()
+  (vc-p4-test-async
+    (vc-p4-test-with-file "contents"
+      (let ((output (generate-new-buffer " *p4-disappearing-output*")))
+        (vc-p4-diff (list file) nil nil output t)
+        (let ((task (car vc-p4--diff-tasks)))
+          (with-current-buffer output
+            (let ((kill-buffer-hook nil)) (kill-buffer output)))
+          (vc-p4--diff-step task)
+          (should (vc-p4--diff-task-done task))
+          (should-not (process-live-p (vc-p4--diff-task-gate task)))
+          (should-not vc-p4--diff-tasks))))))

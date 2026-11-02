@@ -118,6 +118,7 @@
       (save-window-excursion
         (find-file file)
         (vc-p4-test-await (lambda () (eq vc-p4-status 'error)))
+        (should (equal vc-mode " P4!"))
         (cl-letf (((symbol-function 'vc-p4--run-async)
                    (lambda (&rest _) (ert-fail "Retry storm"))))
           (dotimes (_ 10) (vc-p4-registered file) (vc-p4-state file)))
