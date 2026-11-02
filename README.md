@@ -19,13 +19,14 @@ those operations are not yet implemented through VC.
   missing files, outdated revisions and unresolved conflicts.
 - Pristine revision retrieval and unified diffs against the synced revision.
 - Cached revision contents and explicit refresh after external P4 commands.
+- Background discovery, revision retrieval and gutter diffs with timeouts and cancellation.
 
 ## Requirements
 
 - Emacs 30.1 or later.
 - The `p4` CLI, configured and authenticated for your workspace.
 - diff-hl, installed separately, for gutter highlighting.
-- A `diff` executable on PATH that supports `--label`.
+- A `diff` executable on PATH that supports `--label`, and `cat` for VC completion notifications.
 
 Emacs must inherit the P4 environment/configuration needed by the CLI. Run
 `p4 info` from your workspace to check the selected server and client.
@@ -48,7 +49,7 @@ Use Emacs 30's built-in `use-package` and `:vc` support to install from
   :ensure t
   :demand t
   :custom
-  (diff-hl-update-async nil)
+  (diff-hl-update-async t)
   :config
   (global-diff-hl-mode 1))
 ```
@@ -67,9 +68,9 @@ For unsaved-buffer highlighting, add:
   (diff-hl-flydiff-mode 1))
 ```
 
-The current backend still waits for P4 queries; disabling async updates does
-not prevent those waits. Non-blocking operation is required before the package
-is recommended for everyday use.
+P4 gutter updates use background processes, including flydiff and cold revision
+retrieval. They remain asynchronous even if another package disables
+`diff-hl-update-async`. Other VC backends keep their own settings.
 
 ## Usage
 
@@ -84,8 +85,13 @@ After an external `p4 sync`, `p4 revert` or `p4 submit`:
 
 1. Reload the buffer with `M-x revert-buffer` if its file changed on disk,
    preserving any unsaved work first.
-2. Run `M-x vc-p4-refresh` to refresh VC state and clear backend caches.
-3. Run `M-x diff-hl-update` to refresh the gutter.
+2. Run `M-x vc-p4-refresh` to invalidate caches and schedule fresh VC state
+   and gutters. The command returns immediately; the results arrive later.
+
+`P4?` in the mode line means work is pending; `P4!` means retrieval or diff
+failed. Pending data is not reported as a confirmed clean file. Closing a
+buffer cancels its pending work. External sync processes are not cancelled,
+and the backend never replaces unsaved buffer text.
 
 For a guided check and uninstall instructions, see
 [the workspace smoke check](VALIDATION.md).
@@ -93,8 +99,14 @@ For a guided check and uninstall instructions, see
 ## Limitations
 
 - Checkout, add, revert and submit through Emacs VC are not implemented yet.
-- P4 queries are synchronous. Keep `diff-hl-update-async` disabled. Cold queries
-  can wait up to `vc-p4-command-timeout` (10 seconds per command).
+- Automatic P4 queries and gutter diffs are asynchronous. Explicit synchronous
+  VC consumers require cached revisions and report pending data instead of
+  waiting; retry after retrieval finishes. Explicit synchronous local diff
+  requests can still wait for the local `diff` executable.
+- Background workers time out after `vc-p4-command-timeout` (10 seconds by
+  default). Failed queries back off for `vc-p4-retry-delay` (10 seconds).
+  At most `vc-p4-max-processes` workers (default 4) run concurrently;
+  `vc-p4-max-pending-diffs` limits pending diff pipelines (default 32).
 - There is no background polling for external workspace changes.
 - Binary files and UTF-16 files do not produce textual gutter hunks. UTF-16
   pristine revision retrieval preserves the original bytes.
@@ -111,7 +123,9 @@ validation scope.
 If a file is not recognized, evaluate `(vc-backend buffer-file-name)` in its
 buffer; a recognized Perforce file should return `P4`. Check that Emacs can
 find the configured `vc-p4-program` and that the CLI selects the correct client.
-Inspect `vc-p4-last-error` for the most recent discovery failure.
+Discovery can initially return nil while its background query runs.
+Inspect `vc-p4-last-error` for the most recent failure; after correcting the
+CLI configuration or login, run `M-x vc-p4-refresh`.
 
 When reporting a problem, include Emacs, diff-hl and P4 versions, the expected
 behavior, and a small reproduction. Remove credentials and private server,

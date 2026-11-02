@@ -9,10 +9,10 @@ Validate other environments using the workspace smoke check.
 ## Checks
 
 - Warning-free byte compilation.
-- 34 backend/process tests; 37 total including three real diff-hl consumer tests
-  with mocked P4 retrieval.
-- 17 disposable-server tests covering actual metadata, byte retrieval, state,
-  mappings, checkout models and seven gutter scenarios. Run against both
+- 46 backend/process tests; 57 total including three real diff-hl consumer tests
+  with mocked P4 retrieval and eight fault/input responsiveness tests.
+- 18 disposable-server tests covering actual metadata, byte retrieval, state,
+  mappings, checkout models and eight gutter scenarios. Run against both
   case-sensitive and case-insensitive servers; the alias-case assertion applies
   only to the latter.
 - Fixture clients use LineEnd local, classic views with exclusions, noallwrite
@@ -38,26 +38,43 @@ The fixture uses a temporary server root, loopback port, isolated configuration,
 users and clients. It verifies the server root and shuts down on exit. No private
 history export is necessary.
 
-The asynchronous command runner has isolated tests for cancellation, deadlines,
-bounded concurrency, raw output, environment capture and callback failures.
-It is not yet wired into automatic VC or diff-hl paths. These tests do not
-establish end-to-end input responsiveness.
+The fault worker delays P4 and local diff by 600 ms, simulates a hung process,
+and returns authentication/connection failures. Keyboard macros run an initiating
+command followed by queued typing through Emacs command dispatch, asserting that
+input executes while work is still pending (including an already-running worker).
+The latency gate is 300 ms; a timer heartbeat alone does not pass it. Tests also
+cover expired metadata, save/refresh, obsolete results, retry backoff, cancelled
+buffers, process and temporary-file cleanup, and bounded/coalesced diff pipelines.
+A real-server scenario overlaps external sync with a delayed diff and queued
+input, then checks the new HAVE revision and preservation of unsaved text.
+
+On macOS arm64, Emacs 30.2 and 31.1 passed these tests. Observed queued-command
+latencies were below 10 ms in the local test runs with 600 ms worker delays.
+These are small-file batch command-loop measurements, not a large-workspace or
+GUI rendering benchmark. The GUI/private-workspace check remains in VALIDATION.md.
 
 ## Compatibility and remaining scope
 
-The diff-hl source is unchanged. Two P4-only advice functions recognize
-`needs-merge` as locally modified and scope revision-cache filenames to P4
-configuration/depot identity. A save hook invalidates VC state before diff-hl
-runs, including edits to files previously marked `needs-update`.
+The diff-hl source is unchanged. P4-only advice recognizes `needs-merge`, scopes
+revision-cache names, selects asynchronous saved/unsaved diff paths, separates
+output buffers, and rejects obsolete results immediately before overlay updates.
+A save hook invalidates VC state before diff-hl runs. Buffers show pending/error
+status instead of claiming unknown data is clean.
 
 Metadata has a short TTL. Pristine numeric revisions are cached in memory by
 configuration, depot path and revision. P4CONFIG/P4ENVIRO attribute changes
 alter the cache identity. Use `vc-p4-refresh` after external commands or changes
-to server-side client views. There is no background server polling; cold queries
-are synchronous and bounded by `vc-p4-command-timeout` (10 seconds per command).
+to server-side client views. There is no background server polling. Cold or
+expired queries queue work,
+return unknown/pending immediately, and refresh VC properties when results arrive.
+The synchronous P4 adapter remains only for explicit batch/fixture tooling.
+Synchronous `find-revision` cannot defer its caller, so it signals pending data
+on a cache miss; the automatic flydiff path uses the asynchronous pipeline instead.
+Explicit synchronous local diffs require cached bases. Background worker timeouts
+are controlled by `vc-p4-command-timeout` (10 seconds per worker).
 
 Not yet covered: Windows line-ending translation, Unicode-mode servers and
-P4CHARSET combinations, streams/complex overlays, TRAMP, asynchronous updates,
+P4CHARSET combinations, streams/complex overlays, TRAMP,
 large-repository performance, other server builds and GUI appearance.
 Binary differences produce no textual hunks. UTF-16 baselines are byte-correct,
 but local diff treats them as binary. Editing/submission through VC belongs to
