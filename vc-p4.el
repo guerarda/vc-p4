@@ -471,11 +471,220 @@ revision alone is not unique across Perforce clients or servers."
   (advice-add 'diff-hl-modified-p :before-until #'vc-p4--diff-hl-modified-p)
   (advice-add 'diff-hl-make-temp-file-name :around #'vc-p4--diff-hl-temp-name))
 
-(defun vc-p4-diff (files &optional rev1 rev2 buffer _async)
+(defcustom vc-p4-diff-program "diff" "Executable used for local differences."
+  :type 'string)
+(defvar vc-p4--generation 0)
+(defvar vc-p4--diff-tasks nil)
+(cl-defstruct (vc-p4--diff-task (:constructor vc-p4--make-diff-task))
+  files rev1 rev2 destination source tick contexts stamps generation
+  gate worker timer temps chunks remaining snapshot switches deadline done)
+
+(defun vc-p4--file-stamp (file)
+  "Return local FILE identity and modification attributes."
+  (let ((attrs (file-attributes file)))
+    (list (file-attribute-size attrs) (file-attribute-modification-time attrs)
+          (file-attribute-status-change-time attrs) (file-attribute-inode-number attrs))))
+
+(defun vc-p4--diff-valid-p (task)
+  "Whether TASK still describes the current source and workspace."
+  (and (buffer-live-p (vc-p4--diff-task-destination task))
+       (= vc-p4--generation (vc-p4--diff-task-generation task))
+       (equal (vc-p4--diff-task-contexts task)
+              (mapcar #'vc-p4--context (vc-p4--diff-task-files task)))
+       (equal (vc-p4--diff-task-stamps task)
+              (mapcar #'vc-p4--file-stamp (vc-p4--diff-task-files task)))
+       (or (null (vc-p4--diff-task-source task))
+           (and (buffer-live-p (vc-p4--diff-task-source task))
+                (with-current-buffer (vc-p4--diff-task-source task)
+                  (and (equal buffer-file-name (car (vc-p4--diff-task-files task)))
+                       (= (buffer-chars-modified-tick) (vc-p4--diff-task-tick task))))))))
+
+(defun vc-p4--diff-finish (task &optional success)
+  "Release TASK; publish output only on valid SUCCESS."
+  (unless (vc-p4--diff-task-done task)
+    (setf (vc-p4--diff-task-done task) t)
+    (when (timerp (vc-p4--diff-task-timer task))
+      (cancel-timer (vc-p4--diff-task-timer task)))
+    (when (vc-p4--diff-task-worker task)
+      (vc-p4--cancel (vc-p4--diff-task-worker task)))
+    (dolist (file (vc-p4--diff-task-temps task))
+      (when (file-exists-p file) (delete-file file)))
+    (setq vc-p4--diff-tasks (delq task vc-p4--diff-tasks))
+    (let ((gate (vc-p4--diff-task-gate task)))
+      (when (process-live-p gate)
+        (if (and success (vc-p4--diff-valid-p task))
+            (progn
+              (with-current-buffer (vc-p4--diff-task-destination task)
+                (let ((inhibit-read-only t))
+                  (erase-buffer)
+                  (insert (decode-coding-string
+                           (apply #'concat (nreverse (vc-p4--diff-task-chunks task)))
+                           'utf-8-unix))))
+              ;; VC and diff-hl attach continuations to this process.  It
+              ;; exits only after the entire multi-stage result is available.
+              (process-send-eof gate))
+          (delete-process gate))))))
+
+(defun vc-p4--diff-step (task)
+  "Advance TASK without waiting for P4 or a local diff process."
+  (unless (vc-p4--diff-task-done task)
+    (with-current-buffer (or (and (buffer-live-p (vc-p4--diff-task-source task))
+                                 (vc-p4--diff-task-source task))
+                            (vc-p4--diff-task-destination task))
+      (condition-case err
+          (cond
+           ((or (not (vc-p4--diff-valid-p task))
+                (> (float-time) (vc-p4--diff-task-deadline task)))
+            (vc-p4--diff-finish task))
+           ((null (vc-p4--diff-task-remaining task)) (vc-p4--diff-finish task t))
+           (t
+            (let* ((file (car (vc-p4--diff-task-remaining task)))
+                   (vc-p4-status nil)
+                   (old (vc-p4--base file
+                                    (or (vc-p4--diff-task-rev1 task)
+                                        (if (vc-p4--diff-task-rev2 task) "0"
+                                          (vc-p4-working-revision file)))))
+                   (new (if (vc-p4--diff-task-rev2 task)
+                            (vc-p4--base file (vc-p4--diff-task-rev2 task))
+                          (or (vc-p4--diff-task-snapshot task)
+                              (vc-p4--local-bytes file)))))
+              (cond
+               ((eq vc-p4-status 'error) (vc-p4--diff-finish task))
+               ((or (null old) (null new))
+                (setf (vc-p4--diff-task-timer task)
+                      (run-at-time 0.05 nil #'vc-p4--diff-step task)))
+               (t
+                (let ((a (make-temp-file "vc-p4-old-"))
+                      (b (make-temp-file "vc-p4-new-"))
+                      (coding-system-for-write 'no-conversion)
+                      (switches (vc-p4--diff-task-switches task)))
+                  (setf (vc-p4--diff-task-temps task) (list a b))
+                  (write-region old nil a nil 'silent)
+                  (write-region new nil b nil 'silent)
+                  (let ((vc-p4-program vc-p4-diff-program))
+                    (setf (vc-p4--diff-task-worker task)
+                          (apply #'vc-p4--run-async
+                                 (file-name-directory file)
+                                 (lambda (result)
+                                   (unless (vc-p4--diff-task-done task)
+                                     (if (and (memq (plist-get result :status) '(success error))
+                                              (memq (plist-get result :exit-code) '(0 1)))
+                                         (progn
+                                           (push (plist-get result :stdout)
+                                                 (vc-p4--diff-task-chunks task))
+                                           (dolist (temp (vc-p4--diff-task-temps task))
+                                             (delete-file temp))
+                                           (setf (vc-p4--diff-task-temps task) nil
+                                                 (vc-p4--diff-task-worker task) nil
+                                                 (vc-p4--diff-task-remaining task)
+                                                 (cdr (vc-p4--diff-task-remaining task)))
+                                           (vc-p4--diff-step task))
+                                       (setq vc-p4-last-error
+                                             (format "Local diff failed: %s" result))
+                                       (vc-p4--diff-finish task))))
+                                 (append (if (stringp switches) (list switches) switches)
+                                         (list "--label" (concat file " (base)")
+                                               "--label" file a b)))))))))))
+        (error (setq vc-p4-last-error (error-message-string err))
+               (vc-p4--diff-finish task))))))
+
+(defun vc-p4--diff-async (files rev1 rev2 buffer &optional snapshot)
+  "Start an asynchronous diff into BUFFER, optionally using buffer SNAPSHOT."
+  (let* ((files (mapcar #'expand-file-name files))
+         (destination (get-buffer-create (or buffer "*vc-diff*")))
+         (source (when (equal buffer-file-name (car files)) (current-buffer)))
+         (tick (when source (buffer-chars-modified-tick)))
+         (existing (cl-find destination vc-p4--diff-tasks
+                            :key #'vc-p4--diff-task-destination)))
+    (if (and existing (vc-p4--diff-valid-p existing)
+             (equal files (vc-p4--diff-task-files existing))
+             (equal rev1 (vc-p4--diff-task-rev1 existing))
+             (equal rev2 (vc-p4--diff-task-rev2 existing))
+             (equal snapshot (vc-p4--diff-task-snapshot existing)))
+        1
+      (when existing (vc-p4--diff-finish existing))
+      (with-current-buffer destination
+        (let ((inhibit-read-only t)) (erase-buffer)))
+      (let* ((gate (make-process :name "vc-p4-diff" :buffer destination
+                                 :command '("cat") :connection-type 'pipe
+                                 :noquery t :sentinel #'ignore))
+             (task (vc-p4--make-diff-task
+                    :files files :remaining files :rev1 rev1 :rev2 rev2
+                    :source source :tick tick :destination destination :gate gate
+                    :contexts (mapcar #'vc-p4--context files)
+                    :stamps (mapcar #'vc-p4--file-stamp files)
+                    :generation vc-p4--generation :snapshot snapshot
+                    :switches (or (vc-switches 'P4 'diff) '("-u"))
+                    :deadline (+ (float-time) (* 4 vc-p4-command-timeout)))))
+        (push task vc-p4--diff-tasks)
+        (set-process-sentinel gate
+                              (lambda (process _event)
+                                (when (memq (process-status process) '(exit signal failed))
+                                  (vc-p4--diff-finish task))))
+        (setf (vc-p4--diff-task-timer task)
+              (run-at-time 0 nil #'vc-p4--diff-step task)))
+      1)))
+
+(defvar diff-hl-update-async)
+(defvar diff-hl-reference-revision)
+(declare-function diff-hl-update "diff-hl")
+(declare-function diff-hl-remove-overlays "diff-hl")
+
+(defun vc-p4--gutter-update (original &rest args)
+  "Force non-blocking P4 gutters when calling ORIGINAL with ARGS."
+  (if (and buffer-file-name (eq (vc-backend buffer-file-name) 'P4))
+      (let ((diff-hl-update-async t)) (apply original args))
+    (apply original args)))
+
+(defun vc-p4--gutter-destination (buffer)
+  "Give BUFFER a name unique to the visiting buffer."
+  (format "%s<p4:%s>" (if (bufferp buffer) (buffer-name buffer) buffer)
+          (buffer-name)))
+
+(defun vc-p4--gutter-changes (original file backend &optional revision buffer)
+  "Use a separate P4 output buffer for ORIGINAL's FILE and REVISION."
+  (funcall original file backend revision
+           (if (eq backend 'P4)
+               (vc-p4--gutter-destination (or buffer " *diff-hl* ")) buffer)))
+
+(defun vc-p4--gutter-buffer-diff (original file &optional destination backend context)
+  "Diff unsaved P4 contents asynchronously; otherwise call ORIGINAL."
+  (if (eq (or backend (vc-backend file)) 'P4)
+      (let* ((destination (get-buffer-create
+                           (vc-p4--gutter-destination
+                            (or destination " *diff-hl-buffer*"))))
+             (vc-diff-switches (list (format "-U%d" (or context 0)) "--strip-trailing-cr"))
+             (snapshot (save-restriction
+                         (widen)
+                         (encode-coding-string (buffer-substring-no-properties (point-min) (point-max))
+                                               buffer-file-coding-system))))
+        (vc-p4--diff-async (list file) diff-hl-reference-revision nil destination snapshot)
+        destination)
+    (funcall original file destination backend context)))
+
+(defun vc-p4--update-gutters ()
+  "Refresh enabled gutters after P4 data becomes available."
+  (when (bound-and-true-p diff-hl-mode)
+    (diff-hl-update)))
+
+(with-eval-after-load 'diff-hl
+  (advice-add 'diff-hl-update :around #'vc-p4--gutter-update)
+  (advice-add 'diff-hl-changes-buffer :around #'vc-p4--gutter-changes)
+  (advice-add 'diff-hl-diff-buffer-with-reference :around #'vc-p4--gutter-buffer-diff)
+  (add-hook 'vc-p4-update-hook #'vc-p4--update-gutters))
+
+(defun vc-p4--require-base (file revision)
+  "Return cached bytes for FILE at REVISION or fail without waiting."
+  (or (vc-p4--base file revision)
+      (signal 'vc-p4-pending (list file revision))))
+
+(defun vc-p4-diff (files &optional rev1 rev2 buffer async)
   "Insert unified differences for FILES from REV1 to REV2 into BUFFER.
 Nil revisions mean have revision and working contents respectively.
-This initial implementation is synchronous with bounded P4 retrieval."
-  (let ((destination (get-buffer-create (or buffer "*vc-diff*")))
+ASYNC uses background retrieval and local diff.  Synchronous callers require
+cached baselines and may run local diff; automatic gutters always use ASYNC."
+  (if async (vc-p4--diff-async files rev1 rev2 buffer)
+    (let ((destination (get-buffer-create (or buffer "*vc-diff*")))
         (inhibit-read-only t)
         (result 0))
     ;; Consumers reuse their diff buffer.  Clear it once per fileset so a
@@ -486,17 +695,17 @@ This initial implementation is synchronous with bounded P4 retrieval."
         (unwind-protect
             (let ((coding-system-for-write 'no-conversion)
                   (coding-system-for-read 'utf-8-unix))
-              (write-region (vc-p4--base file (or rev1 (if rev2 "0" (vc-p4-working-revision file)))) nil old nil 'silent)
-              (write-region (if rev2 (vc-p4--base file rev2) (vc-p4--local-bytes file)) nil new nil 'silent)
+              (write-region (vc-p4--require-base file (or rev1 (if rev2 "0" (vc-p4-working-revision file)))) nil old nil 'silent)
+              (write-region (if rev2 (vc-p4--require-base file rev2) (vc-p4--local-bytes file)) nil new nil 'silent)
               (let* ((switches (or (vc-switches 'P4 'diff) '("-u")))
-                     (status (apply #'call-process "diff" nil destination nil
+                     (status (apply #'call-process vc-p4-diff-program nil destination nil
                                     (append (if (stringp switches) (list switches) switches)
                                             (list "--label" (concat file " (base)")
                                                   "--label" file old new)))))
                 (unless (memq status '(0 1)) (signal 'vc-p4-error '("Local diff failed")))
                 (setq result (max result status))))
           (delete-file old) (delete-file new))))
-    result))
+    result)))
 
 (defun vc-p4-mode-line-string (file)
   "Show pending or failed retrieval explicitly for FILE."
@@ -510,6 +719,8 @@ This initial implementation is synchronous with bounded P4 retrieval."
 (defun vc-p4-refresh ()
   "Invalidate P4 caches and schedule new discovery without waiting."
   (interactive)
+  (cl-incf vc-p4--generation)
+  (mapc #'vc-p4--diff-finish (copy-sequence vc-p4--diff-tasks))
   (let (jobs)
     (dolist (table (list vc-p4--metadata vc-p4--contents))
       (maphash (lambda (_ entry)

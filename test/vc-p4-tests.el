@@ -399,3 +399,32 @@
           (should-not (vc-p4-working-revision file))
           (funcall callback '(:status success :stdout "{\"haveRev\":\"1\"}\n"))
           (should (equal (vc-p4-working-revision file) "1")))))))
+
+(ert-deftest vc-p4-diff-async-honors-contract-and-context ()
+  (vc-p4-test-async
+    (vc-p4-test-with-file "one\nchanged\nthree\n"
+      (let ((vc-diff-switches '("-U0")))
+        (cl-letf (((symbol-function 'vc-p4-working-revision) (lambda (_) "7"))
+                  ((symbol-function 'vc-p4--base) (lambda (&rest _) "one\ntwo\nthree\n")))
+          (with-temp-buffer
+            (should (= 1 (vc-p4-diff (list file) nil nil (current-buffer) t)))
+            (should (process-live-p (get-buffer-process (current-buffer))))
+            (vc-p4-test-await (lambda () (not (get-buffer-process (current-buffer)))))
+            (should (string-match-p (regexp-quote "@@ -2 +2 @@") (buffer-string)))
+            (should (string-match-p (regexp-quote "-two\n+changed") (buffer-string)))))))))
+
+(ert-deftest vc-p4-diff-async-rejects-obsolete-source ()
+  (vc-p4-test-async
+    (vc-p4-test-with-file "one\n"
+      (let ((output (generate-new-buffer " *p4-test-diff*")))
+        (unwind-protect
+            (cl-letf (((symbol-function 'vc-p4-working-revision) (lambda (_) "1"))
+                      ((symbol-function 'vc-p4--base) (lambda (&rest _) "base\n")))
+              (with-temp-buffer
+                (setq buffer-file-name file)
+                (insert "one\n")
+                (vc-p4-diff (list file) nil nil output t)
+                (insert "changed before dispatch\n")
+                (vc-p4-test-await (lambda () (not (get-buffer-process output))))
+                (with-current-buffer output (should (= (buffer-size) 0)))))
+          (kill-buffer output))))))

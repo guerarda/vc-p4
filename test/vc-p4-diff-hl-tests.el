@@ -58,6 +58,7 @@
         (setq-local diff-hl-mode t)
         (let ((diff-hl-update-async nil))
           (diff-hl-update)
+          (vc-p4-test-await (lambda () (vc-p4-test-hunks)))
           (should (equal (vc-p4-test-hunks) '((2 change)))))
         (vc-file-clearprops file)))))
 
@@ -81,6 +82,7 @@
                 (unwind-protect
                     (progn (diff-hl-flydiff-mode 1)
                            (diff-hl-update)
+                           (vc-p4-test-await (lambda () (vc-p4-test-hunks)))
                            (should (equal (vc-p4-test-hunks) '((2 change)))))
                   (diff-hl-flydiff-mode -1)))
               (vc-file-clearprops file)))
