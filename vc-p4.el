@@ -241,17 +241,99 @@ P4CONFIG candidate, so creating a nearer configuration invalidates caches."
                           "P4ENVIRO" "P4HOST" "P4TICKETS" "P4TRUST"))
         (vc-p4--config-signature file)))
 
-(defun vc-p4--stat (file &optional fresh)
-  "Return cached fstat metadata for FILE, bypassing cache when FRESH."
-  (when (file-remote-p file) (user-error "P4 remote workspaces are not supported yet"))
-  (let* ((key (list (vc-p4--context file) (expand-file-name file)))
-         (entry (gethash key vc-p4--metadata)))
-    (if (and (not fresh) entry (< (- (float-time) (car entry)) vc-p4-metadata-ttl))
-        (cdr entry)
-      (let ((record (car (vc-p4--query (file-name-directory (expand-file-name file))
-                                     "fstat" (vc-p4--escape file)))))
-        (puthash key (cons (float-time) record) vc-p4--metadata)
-        record))))
+(defcustom vc-p4-retry-delay 10 "Seconds before retrying a failed background query."
+  :type 'number)
+(define-error 'vc-p4-pending "P4 data is being retrieved" 'vc-p4-error)
+(cl-defstruct (vc-p4--entry (:constructor vc-p4--make-entry))
+  value time error job)
+(defvar-local vc-p4--notice-timer nil)
+(defvar-local vc-p4-status nil "Background status: pending, error, or nil.")
+(defvar vc-p4-update-hook nil "Hook run after background data changes in a file buffer.")
+
+(defun vc-p4--notify (file context)
+  "Schedule a coalesced refresh of FILE if CONTEXT still matches."
+  (when-let* ((buffer (get-file-buffer file)))
+    (with-current-buffer buffer
+      (when (and (equal context (vc-p4--context file))
+                 (not vc-p4--notice-timer))
+        (setq vc-p4--notice-timer
+              (run-at-time 0 nil #'vc-p4--publish buffer file context))))))
+
+(defun vc-p4--publish (buffer file context)
+  "Refresh BUFFER's cached VC properties for FILE in CONTEXT."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (setq vc-p4--notice-timer nil)
+      (when (and (equal buffer-file-name file)
+                 (equal context (vc-p4--context file)))
+        (setq vc-p4-status nil)
+        (let ((backend (vc-file-getprop file 'vc-backend)))
+          ;; Do not displace another backend that won discovery while pending.
+          (when (memq backend '(nil none P4))
+            (if (vc-p4-registered file)
+                (progn
+                  (vc-file-setprop file 'vc-backend 'P4)
+                  (vc-file-setprop file 'vc-working-revision (vc-p4-working-revision file))
+                  (vc-file-setprop file 'vc-state (vc-p4-state file))
+                  (vc-file-setprop file 'vc-checkout-model (vc-p4-checkout-model (list file)))
+                  (vc-mode-line file 'P4))
+              (vc-file-setprop file 'vc-state nil)
+              (when (eq backend 'P4)
+                (vc-file-setprop file 'vc-backend 'none))
+              (setq vc-mode (when vc-p4-status " P4?")))
+            (run-hooks 'vc-p4-update-hook)))))))
+
+(defun vc-p4--cached (file args &optional raw immutable)
+  "Return cached ARGS for FILE, scheduling missing or expired data.
+RAW requests bytes; otherwise parse JSON.  IMMUTABLE entries do not expire.
+Pending and failed queries return nil, never fabricated metadata or bytes."
+  (let* ((file (expand-file-name file))
+         (context (vc-p4--context file))
+         (table (if raw vc-p4--contents vc-p4--metadata))
+         (key (list context file args))
+         (entry (gethash key table))
+         (now (float-time)))
+    (unless (and entry
+                 (or (vc-p4--entry-job entry)
+                     (and (vc-p4--entry-time entry)
+                          (or (and immutable (not (vc-p4--entry-error entry)))
+                              (< (- now (vc-p4--entry-time entry))
+                                 (if (vc-p4--entry-error entry)
+                                     vc-p4-retry-delay vc-p4-metadata-ttl))))))
+      (setq entry (vc-p4--make-entry))
+      (puthash key entry table)
+      (setf (vc-p4--entry-job entry)
+            (apply #'vc-p4--run-async
+                   (if (file-directory-p file) file (file-name-directory file))
+                   (lambda (result)
+                     ;; Refresh can replace the entry while the worker runs.
+                     (when (eq entry (gethash key table))
+                       (setf (vc-p4--entry-job entry) nil
+                             (vc-p4--entry-time entry) (float-time))
+                       (condition-case err
+                           (if (eq (plist-get result :status) 'success)
+                               (setf (vc-p4--entry-value entry)
+                                     (if raw (plist-get result :stdout)
+                                       (vc-p4--parse-json (plist-get result :stdout))))
+                             (signal 'vc-p4-error
+                                     (list (format "%s: %s%s%s"
+                                                   (plist-get result :status)
+                                                   (or (plist-get result :detail) "")
+                                                   (plist-get result :stderr)
+                                                   (plist-get result :stdout)))))
+                         (error (setf (vc-p4--entry-error entry) (error-message-string err))
+                                (setq vc-p4-last-error (error-message-string err))))
+                       (vc-p4--notify file context)))
+                   (append (unless raw '("-Mj" "-ztag")) args))))
+    (cond ((vc-p4--entry-job entry) (setq vc-p4-status 'pending) nil)
+          ((vc-p4--entry-error entry) (setq vc-p4-status 'error) nil)
+          (t (vc-p4--entry-value entry)))))
+
+(defun vc-p4--stat (file &optional _fresh)
+  "Return fresh cached fstat metadata for FILE, or nil while pending.
+Explicit invalidation is handled by `vc-p4-refresh', not by a wait here."
+  (unless (file-remote-p file)
+    (car (vc-p4--cached file (list "fstat" (vc-p4--escape file))))))
 
 ;;;###autoload
 (defun vc-p4-registered (file)
@@ -272,33 +354,24 @@ P4CONFIG candidate, so creating a nearer configuration invalidates caches."
                           (type (or (alist-get 'type stat) (alist-get 'headType stat) "")))
                      (string-match-p "+[^+]*l" type))) files)
         'locking
-      (let* ((file (car files))
-             (key (list 'client (vc-p4--context file)))
-             (entry (gethash key vc-p4--metadata))
-             (spec (if (and entry (< (- (float-time) (car entry)) vc-p4-metadata-ttl))
-                       (cdr entry)
-                     (let ((value (car (vc-p4--query (file-name-directory (expand-file-name file))
-                                                    "client" "-o"))))
-                       (puthash key (cons (float-time) value) vc-p4--metadata)
-                       value))))
+      (let ((spec (car (vc-p4--cached (car files) '("client" "-o")))))
         (if (member "allwrite" (split-string (or (alist-get 'Options spec) "")))
             'implicit 'announce)))))
 (defun vc-p4-working-revision (file)
   "Return the synced revision of FILE, or zero for an addition."
   (let ((stat (vc-p4--stat file)))
     (if (member (alist-get 'action stat) '("add" "move/add")) "0"
-      (or (alist-get 'haveRev stat) (user-error "No have revision for %s" file)))))
+      (alist-get 'haveRev stat))))
 
 (defun vc-p4-root (file)
   "Return the P4 workspace root for FILE if its mapping is valid."
   (unless (file-remote-p file)
     (condition-case nil
         (let* ((file (expand-file-name file))
-               (directory (if (file-directory-p file) file (file-name-directory file)))
                (spec (concat (vc-p4--escape file)
                              (when (file-directory-p file)
                                (if (string-suffix-p "/" file) "..." "/..."))))
-               (mappings (vc-p4--query directory "where" spec))
+               (mappings (vc-p4--cached file (list "where" spec)))
                (effective (make-hash-table :test #'equal))
                mapped)
           ;; Later mappings override the same path.  An excluded child does
@@ -308,7 +381,7 @@ P4CONFIG candidate, so creating a nearer configuration invalidates caches."
               (puthash path (not (assq 'unmap mapping)) effective)))
           (maphash (lambda (_path included) (when included (setq mapped t))) effective)
           (when mapped
-            (let ((root (alist-get 'clientRoot (car (vc-p4--query directory "info")))))
+            (let ((root (alist-get 'clientRoot (car (vc-p4--cached file '("info"))))))
               (when (and root (not (equal root "null")))
                 (file-name-as-directory root)))))
       (error nil))))
@@ -322,23 +395,19 @@ P4CONFIG candidate, so creating a nearer configuration invalidates caches."
         (t (user-error "Use a file revision number, #revision or @changelist"))))
 
 (defun vc-p4--base (file revision)
-  "Return pristine bytes of FILE at REVISION."
-  (if (equal revision "0") ""
-    (let* ((stat (vc-p4--stat file))
-           (depot (alist-get 'depotFile stat))
-           (key (list (vc-p4--context file) depot revision))
-           (cached (gethash key vc-p4--contents)))
-      (or cached
-          (let ((bytes (vc-p4--run (file-name-directory (expand-file-name file))
-                                  "print" "-q" "-o" "-" (concat depot (vc-p4--revision-spec revision)))))
-            ;; Symbolic specifications can change without changing their name.
-            (when (string-match-p "\\`[0-9]+\\'" revision)
-              (puthash key bytes vc-p4--contents))
-            bytes)))))
+  "Return cached pristine bytes of FILE at REVISION, or nil while pending."
+  (cond ((equal revision "0") "")
+        ((null revision) nil)
+        (t (when-let* ((depot (alist-get 'depotFile (vc-p4--stat file))))
+             (vc-p4--cached
+              file (list "print" "-q" "-o" "-"
+                         (concat depot (vc-p4--revision-spec revision))) t
+              (string-match-p "\\`[0-9]+\\'" revision))))))
 
 (defun vc-p4-find-revision (file revision buffer)
   "Insert FILE at REVISION into BUFFER."
   (let ((bytes (vc-p4--base file revision)))
+    (unless bytes (signal 'vc-p4-pending (list file revision)))
     (with-current-buffer buffer (insert bytes))))
 
 (defun vc-p4--local-bytes (file)
@@ -354,11 +423,13 @@ P4CONFIG candidate, so creating a nearer configuration invalidates caches."
          (behind (and (alist-get 'haveRev stat) (alist-get 'headRev stat)
                       (< (string-to-number (alist-get 'haveRev stat))
                          (string-to-number (alist-get 'headRev stat))))))
-    (cond ((member action '("add" "move/add")) 'added)
+    (cond ((null stat) nil)
+          ((member action '("add" "move/add")) 'added)
           ((member action '("delete" "move/delete")) 'removed)
           ((and (assq 'unresolved stat)
                 (not (equal (alist-get 'unresolved stat) "0"))) 'conflict)
           ((not (file-exists-p file)) 'missing)
+          ((null (vc-p4--base file (vc-p4-working-revision file))) nil)
           ((not (equal (vc-p4--local-bytes file)
                        (vc-p4--base file (vc-p4-working-revision file))))
            (if behind 'needs-merge 'edited))
@@ -427,14 +498,32 @@ This initial implementation is synchronous with bounded P4 retrieval."
           (delete-file old) (delete-file new))))
     result))
 
+(defun vc-p4-mode-line-string (file)
+  "Show pending or failed retrieval explicitly for FILE."
+  (if vc-p4-status
+      (propertize (if (eq vc-p4-status 'error) "P4!" "P4?")
+                  'help-echo (if (eq vc-p4-status 'error)
+                                 (or vc-p4-last-error "P4 retrieval failed")
+                               "P4 metadata or baseline pending"))
+    (vc-default-mode-line-string 'P4 file)))
+
 (defun vc-p4-refresh ()
-  "Discard P4 caches and refresh VC state for the current file."
+  "Invalidate P4 caches and schedule new discovery without waiting."
   (interactive)
-  (clrhash vc-p4--metadata)
-  (clrhash vc-p4--contents)
-  (when buffer-file-name
-    (vc-file-clearprops buffer-file-name)
-    (vc-refresh-state)))
+  (let (jobs)
+    (dolist (table (list vc-p4--metadata vc-p4--contents))
+      (maphash (lambda (_ entry)
+                 (when (vc-p4--entry-job entry)
+                   (push (vc-p4--entry-job entry) jobs))) table)
+      (clrhash table))
+    (mapc #'vc-p4--cancel jobs))
+  (let ((target (current-buffer)))
+    (dolist (buffer (buffer-list))
+      (with-current-buffer buffer
+        (when (and buffer-file-name
+                 (or (eq buffer target)
+                     (eq (vc-file-getprop buffer-file-name 'vc-backend) 'P4)))
+        (vc-p4--notify buffer-file-name (vc-p4--context buffer-file-name)))))))
 
 ;; Deliberately fail unsupported mutations rather than invoking generic fallbacks.
 (defun vc-p4-checkout (&rest _args) "Checkout is not implemented yet." (user-error "Use p4 edit; VC checkout is not implemented yet"))
