@@ -33,12 +33,12 @@ Emacs must inherit the P4 environment/configuration needed by the CLI. Run
 ## Installation
 
 Use Emacs 30's built-in `use-package` and `:vc` support to install from
-[GitHub](https://github.com/guerarda/p4vc). Git must be available on Emacs's
+[GitHub](https://github.com/guerarda/vc-p4). Git must be available on Emacs's
 `exec-path`.
 
 ```elisp
 (use-package vc-p4
-  :vc (:url "https://github.com/guerarda/p4vc.git"
+  :vc (:url "https://github.com/guerarda/vc-p4.git"
        :rev :newest)
   ;; Uncomment if p4 is not on Emacs's exec-path:
   ;; :custom (vc-p4-program "/path/to/p4")
