@@ -428,3 +428,46 @@
                 (vc-p4-test-await (lambda () (not (get-buffer-process output))))
                 (with-current-buffer output (should (= (buffer-size) 0)))))
           (kill-buffer output))))))
+
+(ert-deftest vc-p4-killed-source-cancels-requests-and-diff ()
+  (vc-p4-test-async
+    (vc-p4-test-with-file "one\n"
+      (let ((source (generate-new-buffer " *p4-test-source*"))
+            (output (generate-new-buffer " *p4-test-output*")))
+        (unwind-protect
+            (progn
+              (with-current-buffer source
+                (setq buffer-file-name file)
+                (vc-p4--cached file '("-c" "while :; do :; done") t)
+                (vc-p4-diff (list file) nil nil output t))
+              (kill-buffer source)
+              (vc-p4-test-await (lambda () (not (get-buffer-process output))))
+              (should-not vc-p4--queue)
+              (should-not vc-p4--active)
+              (should-not vc-p4--diff-tasks))
+          (when (buffer-live-p source) (kill-buffer source))
+          (kill-buffer output))))))
+
+(ert-deftest vc-p4-refresh-cancels-obsolete-work ()
+  (vc-p4-test-async
+    (vc-p4-test-with-file "one\n"
+      (vc-p4--cached file '("-c" "while :; do :; done") t)
+      (let ((job (car vc-p4--queue)))
+        (vc-p4-refresh)
+        (should (vc-p4--job-done job))
+        (should (eq (plist-get (vc-p4--job-result job) :status) 'cancelled))
+        (should (= (hash-table-count vc-p4--contents) 0))))))
+
+(ert-deftest vc-p4-workspace-change-clears-old-vc-properties ()
+  (vc-p4-test-with-file "one\n"
+    (with-temp-buffer
+      (setq buffer-file-name file)
+      (let ((process-environment (copy-sequence process-environment)))
+        (setenv "P4CLIENT" "first")
+        (vc-p4--ensure-context)
+        (vc-file-setprop file 'vc-backend 'P4)
+        (vc-file-setprop file 'vc-state 'up-to-date)
+        (setenv "P4CLIENT" "second")
+        (vc-p4--ensure-context)
+        (should-not (vc-file-getprop file 'vc-backend))
+        (should-not (vc-file-getprop file 'vc-state))))))

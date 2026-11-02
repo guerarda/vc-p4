@@ -3,9 +3,36 @@
 (require 'vc-p4)
 (setq vc-p4-program (or (getenv "VC_P4_PROGRAM") "p4"))
 
+(defun vc-p4-integration-drain ()
+  "Wait in the test harness until asynchronous backend work settles."
+  (let ((deadline (+ (float-time) 10)))
+    (while (and (< (float-time) deadline)
+                (or vc-p4--queue vc-p4--active vc-p4--diff-tasks
+                    vc-p4--dispatch-timer
+                    (cl-some (lambda (buffer)
+                               (buffer-local-value 'vc-p4--notice-timer buffer))
+                             (buffer-list))))
+      (accept-process-output nil 0.01))
+    (should-not vc-p4--queue)
+    (should-not vc-p4--active)
+    (should-not vc-p4--diff-tasks)
+    ;; Let the completion proxy deliver consumer sentinels too.
+    (accept-process-output nil 0.02)))
+
+(defun vc-p4-integration-ready (file)
+  "Populate FILE's metadata and baseline through real asynchronous workers."
+  (dotimes (_ 3)
+    (vc-p4-registered file)
+    (vc-p4-state file)
+    (vc-p4-checkout-model (list file))
+    (vc-p4-root file)
+    (vc-p4-integration-drain))
+  file)
+
 (ert-deftest vc-p4-real-server-have-revision-baseline ()
   (let ((file (getenv "VC_P4_TEST_FILE")))
     (should file)
+    (vc-p4-integration-ready file)
     (should (vc-p4-registered file))
     (should (equal (vc-p4-working-revision file) "1"))
     (should (equal (alist-get 'headRev (vc-p4--stat file t)) "2"))
@@ -21,7 +48,7 @@
 
 (defun vc-p4-integration-file (name)
   "Return fixture path for NAME."
-  (expand-file-name name (getenv "VC_P4_TEST_ROOT")))
+  (vc-p4-integration-ready (expand-file-name name (getenv "VC_P4_TEST_ROOT"))))
 
 (ert-deftest vc-p4-real-server-fixture-configuration ()
   (let* ((dir (getenv "VC_P4_TEST_ROOT"))
@@ -60,6 +87,9 @@
 (ert-deftest vc-p4-real-server-root-and-new-file-discovery ()
   (let* ((dir (file-name-as-directory (getenv "VC_P4_TEST_ROOT")))
          (default-directory dir))
+    (vc-p4-integration-ready "clean.txt")
+    (vc-p4-integration-ready dir)
+    (vc-p4-integration-ready (expand-file-name "new.txt" dir))
     (should (equal (vc-p4-root "clean.txt") dir))
     (should (equal (vc-p4-root dir) dir))
     (should (equal (vc-p4-responsible-p (expand-file-name "new.txt" dir)) dir))
@@ -78,6 +108,7 @@
     (setenv "P4CLIENT" "bob-client")
     (setenv "P4USER" "bob")
     (let ((file (expand-file-name "../bob/clean.txt" (getenv "VC_P4_TEST_ROOT"))))
+      (vc-p4-integration-ready file)
       (should (eq (vc-p4-checkout-model (list file)) 'implicit)))))
 
 (ert-deftest vc-p4-real-server-case-variant-discovery ()

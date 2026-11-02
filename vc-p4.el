@@ -246,6 +246,7 @@ P4CONFIG candidate, so creating a nearer configuration invalidates caches."
 (define-error 'vc-p4-pending "P4 data is being retrieved" 'vc-p4-error)
 (cl-defstruct (vc-p4--entry (:constructor vc-p4--make-entry))
   value time error job)
+(defvar-local vc-p4--notice-context nil)
 (defvar-local vc-p4--notice-timer nil)
 (defvar-local vc-p4-status nil "Background status: pending, error, or nil.")
 (defvar vc-p4-update-hook nil "Hook run after background data changes in a file buffer.")
@@ -255,8 +256,11 @@ P4CONFIG candidate, so creating a nearer configuration invalidates caches."
   (when-let* ((buffer (get-file-buffer file)))
     (with-current-buffer buffer
       (when (and (equal context (vc-p4--context file))
-                 (not vc-p4--notice-timer))
-        (setq vc-p4--notice-timer
+                 (or (not vc-p4--notice-timer)
+                     (not (equal context vc-p4--notice-context))))
+        (when vc-p4--notice-timer (cancel-timer vc-p4--notice-timer))
+        (setq vc-p4--notice-context context
+              vc-p4--notice-timer
               (run-at-time 0 nil #'vc-p4--publish buffer file context))))))
 
 (defun vc-p4--publish (buffer file context)
@@ -477,7 +481,7 @@ revision alone is not unique across Perforce clients or servers."
 (defvar vc-p4--diff-tasks nil)
 (cl-defstruct (vc-p4--diff-task (:constructor vc-p4--make-diff-task))
   files rev1 rev2 destination source tick contexts stamps generation
-  gate worker timer temps chunks remaining snapshot switches deadline done)
+  gate worker timer temps chunks remaining snapshot switches baselines deadline done)
 
 (defun vc-p4--file-stamp (file)
   "Return local FILE identity and modification attributes."
@@ -493,6 +497,8 @@ revision alone is not unique across Perforce clients or servers."
               (mapcar #'vc-p4--context (vc-p4--diff-task-files task)))
        (equal (vc-p4--diff-task-stamps task)
               (mapcar #'vc-p4--file-stamp (vc-p4--diff-task-files task)))
+       (cl-every (lambda (pair) (eq (cdr pair) (gethash (car pair) vc-p4--metadata)))
+                 (vc-p4--diff-task-baselines task))
        (or (null (vc-p4--diff-task-source task))
            (and (buffer-live-p (vc-p4--diff-task-source task))
                 (with-current-buffer (vc-p4--diff-task-source task)
@@ -558,6 +564,10 @@ revision alone is not unique across Perforce clients or servers."
                       (b (make-temp-file "vc-p4-new-"))
                       (coding-system-for-write 'no-conversion)
                       (switches (vc-p4--diff-task-switches task)))
+                  (let ((key (list (vc-p4--context file) file
+                                   (list "fstat" (vc-p4--escape file)))))
+                    (when-let* ((entry (gethash key vc-p4--metadata)))
+                      (push (cons key entry) (vc-p4--diff-task-baselines task))))
                   (setf (vc-p4--diff-task-temps task) (list a b))
                   (write-region old nil a nil 'silent)
                   (write-region new nil b nil 'silent)
@@ -630,10 +640,70 @@ revision alone is not unique across Perforce clients or servers."
 (declare-function diff-hl-update "diff-hl")
 (declare-function diff-hl-remove-overlays "diff-hl")
 
+(defvar-local vc-p4--buffer-context nil)
+(defvar-local vc-p4--disk-stamp nil)
+
+(defun vc-p4--cancel-file-work (file)
+  "Cancel pending requests for FILE without invalidating other files."
+  (dolist (table (list vc-p4--metadata vc-p4--contents))
+    (let (entries)
+      (maphash (lambda (key entry)
+                 (when (and (equal (nth 1 key) file) (vc-p4--entry-job entry))
+                   (push (cons key (vc-p4--entry-job entry)) entries))) table)
+      (dolist (entry entries)
+        (remhash (car entry) table)
+        (vc-p4--cancel (cdr entry))))))
+
+(defun vc-p4--buffer-cleanup ()
+  "Release work owned by the current source or destination buffer."
+  (when vc-p4--notice-timer
+    (cancel-timer vc-p4--notice-timer)
+    (setq vc-p4--notice-timer nil))
+  (dolist (task (copy-sequence vc-p4--diff-tasks))
+    (when (or (eq (current-buffer) (vc-p4--diff-task-source task))
+              (eq (current-buffer) (vc-p4--diff-task-destination task)))
+      (vc-p4--diff-finish task)))
+  (when buffer-file-name (vc-p4--cancel-file-work buffer-file-name)))
+
+(defun vc-p4--ensure-context ()
+  "Invalidate obsolete VC properties when the workspace or disk file changes."
+  (when (and buffer-file-name (not (file-remote-p buffer-file-name)))
+    (let ((context (vc-p4--context buffer-file-name))
+          (stamp (vc-p4--file-stamp buffer-file-name)))
+      (when (or (and vc-p4--buffer-context (not (equal context vc-p4--buffer-context)))
+                (and vc-p4--disk-stamp (not (equal stamp vc-p4--disk-stamp))))
+        (vc-p4--buffer-cleanup)
+        (vc-file-clearprops buffer-file-name)
+        (let (keys)
+          (maphash (lambda (key _)
+                     (when (equal (nth 1 key) buffer-file-name) (push key keys)))
+                   vc-p4--metadata)
+          (mapc (lambda (key) (remhash key vc-p4--metadata)) keys)))
+      (setq vc-p4--buffer-context context vc-p4--disk-stamp stamp))))
+
+(defun vc-p4--after-revert ()
+  "Recheck P4 state after a local file revert without waiting."
+  (when (and buffer-file-name
+             (or vc-p4--buffer-context
+                 (eq (vc-file-getprop buffer-file-name 'vc-backend) 'P4)))
+    (vc-p4--ensure-context)
+    (vc-p4--notify buffer-file-name (vc-p4--context buffer-file-name))))
+
+(add-hook 'kill-buffer-hook #'vc-p4--buffer-cleanup)
+(add-hook 'after-revert-hook #'vc-p4--after-revert)
+
 (defun vc-p4--gutter-update (original &rest args)
   "Force non-blocking P4 gutters when calling ORIGINAL with ARGS."
+  (when (and buffer-file-name
+             (or vc-p4--buffer-context
+                 (eq (vc-file-getprop buffer-file-name 'vc-backend) 'P4)))
+    (vc-p4--ensure-context))
   (if (and buffer-file-name (eq (vc-backend buffer-file-name) 'P4))
-      (let ((diff-hl-update-async t)) (apply original args))
+      (let ((diff-hl-update-async t))
+        (setq vc-p4-status nil)
+        (vc-file-setprop buffer-file-name 'vc-state (vc-p4-state buffer-file-name))
+        (vc-mode-line buffer-file-name 'P4)
+        (apply original args))
     (apply original args)))
 
 (defun vc-p4--gutter-destination (buffer)

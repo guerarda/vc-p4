@@ -3,6 +3,11 @@
 (require 'diff-hl)
 (require 'diff-hl-flydiff)
 
+(defun vc-p4-gutter-update ()
+  "Schedule an actual consumer update, then await it only in the test harness."
+  (diff-hl-update)
+  (vc-p4-integration-drain))
+
 (defun vc-p4-gutter-hunks ()
   "Return sorted (LINE TYPE) gutter hunks in the current buffer."
   (sort (delq nil (mapcar
@@ -25,9 +30,11 @@
      (unwind-protect
          (progn
            (vc-p4--run dir "edit" (vc-p4--escape file))
+           (vc-p4-integration-ready file)
            (setq buffer (find-file-noselect file))
            (with-current-buffer buffer
              (diff-hl-mode 1)
+             (vc-p4-integration-drain)
              ,@body))
        (when (buffer-live-p buffer)
          (with-current-buffer buffer (set-buffer-modified-p nil))
@@ -44,21 +51,21 @@
     (goto-char (point-min)) (forward-line 1)
     (delete-region (point) (line-end-position)) (insert "changed")
     (save-buffer)
-    (diff-hl-update)
+    (vc-p4-gutter-update)
     (should (equal (vc-p4-gutter-hunks) '((2 change))))
     (vc-p4--run dir "revert" (vc-p4--escape file))
     (revert-buffer t t)
-    (vc-p4-refresh)
-    (diff-hl-update)
+    (progn (vc-p4-refresh) (vc-p4-integration-drain))
+    (vc-p4-gutter-update)
     (should-not (vc-p4-gutter-hunks))))
 
 (ert-deftest vc-p4-real-gutter-insertion-and-deletion ()
   (vc-p4-gutter-with-file
     (goto-char (point-min)) (forward-line 1)
-    (insert "inserted\n") (save-buffer) (diff-hl-update)
+    (insert "inserted\n") (save-buffer) (vc-p4-gutter-update)
     (should (equal (vc-p4-gutter-hunks) '((2 insert))))
     (erase-buffer) (insert "one\nthree\n")
-    (save-buffer) (diff-hl-update)
+    (save-buffer) (vc-p4-gutter-update)
     (should (equal (vc-p4-gutter-hunks) '((2 delete))))))
 
 (ert-deftest vc-p4-real-gutter-unsaved-edit ()
@@ -68,7 +75,7 @@
           (diff-hl-flydiff-mode 1)
           (goto-char (point-min)) (forward-line 1)
           (delete-region (point) (line-end-position)) (insert "unsaved")
-          (diff-hl-update)
+          (vc-p4-gutter-update)
           (should (equal (vc-p4-gutter-hunks) '((2 change))))
           (should (equal (vc-p4--local-bytes file) "one\ntwo\nthree\n")))
       (diff-hl-flydiff-mode -1))))
@@ -76,13 +83,13 @@
 (provide 'vc-p4-gutter-integration-tests)
 
 (ert-deftest vc-p4-real-gutter-behind-depot-head ()
-  (let* ((file (getenv "VC_P4_TEST_FILE"))
+  (let* ((file (vc-p4-integration-ready (getenv "VC_P4_TEST_FILE")))
          (buffer (find-file-noselect file))
          (diff-hl-update-async nil))
     (unwind-protect
         (with-current-buffer buffer
           (should (eq (vc-state file) 'needs-merge))
-          (diff-hl-mode 1) (diff-hl-update)
+          (diff-hl-mode 1) (vc-p4-gutter-update)
           (should (equal (vc-p4-gutter-hunks) '((2 change)))))
       (kill-buffer buffer)
       (vc-file-clearprops file))))
@@ -94,10 +101,10 @@
           (progn
             (diff-hl-flydiff-mode 1)
             (goto-char (point-min)) (insert "first\n")
-            (diff-hl-update)
+            (vc-p4-gutter-update)
             (cl-letf (((symbol-function 'vc-p4--run)
                        (lambda (&rest _) (ert-fail "Warm typing queried P4"))))
-              (insert "second\n") (diff-hl-update)
+              (insert "second\n") (vc-p4-gutter-update)
               (should (vc-p4-gutter-hunks))))
         (diff-hl-flydiff-mode -1)))))
 
@@ -105,18 +112,18 @@
   (vc-p4-gutter-with-file
     (goto-char (point-min)) (forward-line 1)
     (delete-region (point) (line-end-position)) (insert "submitted")
-    (save-buffer) (diff-hl-update)
+    (save-buffer) (vc-p4-gutter-update)
     (goto-char (point-min))
     (let ((diff-hl-next-previous-hunk-auto-recenter nil))
       (diff-hl-next-hunk))
     (should (= (line-number-at-pos) 2))
     (vc-p4--run dir "submit" "-d" "gutter test submission" (vc-p4--escape file))
-    (vc-p4-refresh) (diff-hl-update)
+    (progn (vc-p4-refresh) (vc-p4-integration-drain)) (vc-p4-gutter-update)
     (should (equal (vc-p4-working-revision file) "2"))
     (should-not (vc-p4-gutter-hunks))
     ;; Restore the base revision for other tests without undoing server history.
     (vc-p4--run dir "sync" (concat (vc-p4--escape file) "#1"))
-    (revert-buffer t t) (vc-p4-refresh)
+    (revert-buffer t t) (progn (vc-p4-refresh) (vc-p4-integration-drain))
     (should (eq (vc-state file) 'needs-update))
     (should-not (vc-p4-gutter-hunks))))
 
@@ -126,7 +133,7 @@
          (diff-hl-update-async nil))
     (unwind-protect
         (with-current-buffer buffer
-          (diff-hl-mode 1) (diff-hl-update)
+          (diff-hl-mode 1) (vc-p4-gutter-update)
           (should (eq (vc-state file) 'added))
           (should (eq (cadar (vc-p4-gutter-hunks)) 'insert)))
       (kill-buffer buffer))))
