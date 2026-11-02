@@ -1,0 +1,29 @@
+#!/usr/bin/env python3
+"""Deterministic slow/failing P4 and diff substitute for responsiveness tests."""
+import json
+import os
+import sys
+import time
+
+mode = os.environ.get("VC_P4_FAULT_MODE", "normal")
+time.sleep(float(os.environ.get("VC_P4_FAULT_DELAY", "0")))
+if mode == "hang":
+    time.sleep(60)
+if mode in {"auth", "outage"}:
+    print("Login expired" if mode == "auth" else "TCP connect failed", file=sys.stderr)
+    sys.exit(1)
+args = [arg for arg in sys.argv[1:] if arg not in {"-Mj", "-ztag"}]
+if args and args[0] in {"fstat", "where", "info", "client", "print"}:
+    command = args[0]
+    if command == "print":
+        sys.stdout.buffer.write(b"one\ntwo\nthree\n")
+    else:
+        record = {
+            "fstat": {"clientFile": args[-1], "depotFile": "//test/file", "haveRev": "1", "headRev": "1"},
+            "where": {"path": args[-1]},
+            "info": {"clientRoot": os.getcwd()},
+            "client": {"Options": "allwrite"},
+        }[command]
+        print(json.dumps(record))
+else:
+    os.execvp("diff", ["diff", *sys.argv[1:]])

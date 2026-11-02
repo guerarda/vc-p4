@@ -87,3 +87,5 @@
                   (diff-hl-flydiff-mode -1)))
               (vc-file-clearprops file)))
         (delete-directory temporary-file-directory t)))))
+
+(provide 'vc-p4-diff-hl-tests)

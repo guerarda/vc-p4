@@ -46,6 +46,8 @@ Release all resources before delivering the result to its callback."
   (unless (vc-p4--job-done job)
     (setf (vc-p4--job-done job) t)
     (let ((result (list :status status :detail detail
+                        :process-status (when (vc-p4--job-process job)
+                                          (process-status (vc-p4--job-process job)))
                         :exit-code (when (and (vc-p4--job-process job)
                                               (memq (process-status (vc-p4--job-process job))
                                                     '(exit signal)))
@@ -149,8 +151,10 @@ Callbacks must tolerate obsolete consumers and must not block."
   (vc-p4--finish job 'cancelled))
 
 (defun vc-p4--run (directory &rest args)
-  "Run P4 with ARGS in DIRECTORY, returning stdout as bytes.
-Use pipes and argument vectors, never a shell.  Enforce a deadline and
+  "Synchronous adapter for explicit batch tooling, using ARGS in DIRECTORY.
+Never use this on automatic VC or gutter paths; use `vc-p4--run-async'.
+Return stdout as bytes.  Use pipes and argument vectors, never a shell.
+Enforce a deadline and
 clean up processes and buffers on errors and keyboard quit."
   (let ((default-directory (file-name-as-directory directory))
         (out (generate-new-buffer " *vc-p4-output*"))
@@ -477,8 +481,12 @@ revision alone is not unique across Perforce clients or servers."
 
 (defcustom vc-p4-diff-program "diff" "Executable used for local differences."
   :type 'string)
+(defcustom vc-p4-max-pending-diffs 32 "Maximum pending diff pipelines, including completion processes."
+  :type 'natnum)
+(defvar-local vc-p4--diff-failed-until nil)
 (defvar vc-p4--generation 0)
 (defvar vc-p4--diff-tasks nil)
+(defvar-local vc-p4--diff-owner-task nil)
 (cl-defstruct (vc-p4--diff-task (:constructor vc-p4--make-diff-task))
   files rev1 rev2 destination source tick contexts stamps generation
   gate worker timer temps chunks remaining snapshot switches baselines deadline done)
@@ -516,6 +524,17 @@ revision alone is not unique across Perforce clients or servers."
     (dolist (file (vc-p4--diff-task-temps task))
       (when (file-exists-p file) (delete-file file)))
     (setq vc-p4--diff-tasks (delq task vc-p4--diff-tasks))
+    (let ((source (vc-p4--diff-task-source task)))
+      (when (buffer-live-p source)
+        (with-current-buffer source
+          (let ((valid (vc-p4--diff-valid-p task)))
+            (setq vc-p4-status (cond ((and success valid) nil)
+                                     (valid 'error) (t 'pending)))
+            (when (and valid (not success))
+              (with-current-buffer (vc-p4--diff-task-destination task)
+                (setq vc-p4--diff-failed-until (+ (float-time) vc-p4-retry-delay)))
+              (when (bound-and-true-p diff-hl-mode) (diff-hl-remove-overlays)))
+            (vc-mode-line buffer-file-name 'P4)))))
     (let ((gate (vc-p4--diff-task-gate task)))
       (when (process-live-p gate)
         (if (and success (vc-p4--diff-valid-p task))
@@ -544,8 +563,8 @@ revision alone is not unique across Perforce clients or servers."
             (vc-p4--diff-finish task))
            ((null (vc-p4--diff-task-remaining task)) (vc-p4--diff-finish task t))
            (t
+            (setq vc-p4-status nil)
             (let* ((file (car (vc-p4--diff-task-remaining task)))
-                   (vc-p4-status nil)
                    (old (vc-p4--base file
                                     (or (vc-p4--diff-task-rev1 task)
                                         (if (vc-p4--diff-task-rev2 task) "0"
@@ -577,7 +596,8 @@ revision alone is not unique across Perforce clients or servers."
                                  (file-name-directory file)
                                  (lambda (result)
                                    (unless (vc-p4--diff-task-done task)
-                                     (if (and (memq (plist-get result :status) '(success error))
+                                     (if (and (eq (plist-get result :process-status) 'exit)
+                                              (memq (plist-get result :status) '(success error))
                                               (memq (plist-get result :exit-code) '(0 1)))
                                          (progn
                                            (push (plist-get result :stdout)
@@ -614,7 +634,18 @@ revision alone is not unique across Perforce clients or servers."
         1
       (when existing (vc-p4--diff-finish existing))
       (with-current-buffer destination
-        (let ((inhibit-read-only t)) (erase-buffer)))
+        (let ((inhibit-read-only t)) (erase-buffer))
+        (when (and vc-p4--diff-failed-until (> vc-p4--diff-failed-until (float-time)))
+          (when source
+            (with-current-buffer source
+              (setq vc-p4-status 'error)
+              (vc-mode-line buffer-file-name 'P4)))
+          (signal 'vc-p4-error '("Local diff failed recently; retry after the backoff interval"))))
+      (when (>= (length vc-p4--diff-tasks) (max 1 vc-p4-max-pending-diffs))
+        (signal 'vc-p4-error '("P4 diff queue is full; retry after pending work finishes")))
+      (when source
+        (setq vc-p4-status 'pending)
+        (vc-mode-line (car files) 'P4))
       (let* ((gate (make-process :name "vc-p4-diff" :buffer destination
                                  :command '("cat") :connection-type 'pipe
                                  :noquery t :sentinel #'ignore))
@@ -627,6 +658,7 @@ revision alone is not unique across Perforce clients or servers."
                     :switches (or (vc-switches 'P4 'diff) '("-u"))
                     :deadline (+ (float-time) (* 4 vc-p4-command-timeout)))))
         (push task vc-p4--diff-tasks)
+        (with-current-buffer destination (setq vc-p4--diff-owner-task task))
         (set-process-sentinel gate
                               (lambda (process _event)
                                 (when (memq (process-status process) '(exit signal failed))
@@ -642,13 +674,15 @@ revision alone is not unique across Perforce clients or servers."
 
 (defvar-local vc-p4--buffer-context nil)
 (defvar-local vc-p4--disk-stamp nil)
+(defvar-local vc-p4--gutter-buffers nil)
 
 (defun vc-p4--cancel-file-work (file)
   "Cancel pending requests for FILE without invalidating other files."
   (dolist (table (list vc-p4--metadata vc-p4--contents))
     (let (entries)
       (maphash (lambda (key entry)
-                 (when (and (equal (nth 1 key) file) (vc-p4--entry-job entry))
+                 (when (and (equal (file-truename (nth 1 key)) (file-truename file))
+                            (vc-p4--entry-job entry))
                    (push (cons key (vc-p4--entry-job entry)) entries))) table)
       (dolist (entry entries)
         (remhash (car entry) table)
@@ -663,7 +697,11 @@ revision alone is not unique across Perforce clients or servers."
     (when (or (eq (current-buffer) (vc-p4--diff-task-source task))
               (eq (current-buffer) (vc-p4--diff-task-destination task)))
       (vc-p4--diff-finish task)))
-  (when buffer-file-name (vc-p4--cancel-file-work buffer-file-name)))
+  (when buffer-file-name (vc-p4--cancel-file-work buffer-file-name))
+  (let ((buffers vc-p4--gutter-buffers))
+    (setq vc-p4--gutter-buffers nil)
+    (dolist (buffer buffers)
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
 
 (defun vc-p4--ensure-context ()
   "Invalidate obsolete VC properties when the workspace or disk file changes."
@@ -703,13 +741,23 @@ revision alone is not unique across Perforce clients or servers."
         (setq vc-p4-status nil)
         (vc-file-setprop buffer-file-name 'vc-state (vc-p4-state buffer-file-name))
         (vc-mode-line buffer-file-name 'P4)
-        (apply original args))
+        (condition-case err
+            (apply original args)
+          (vc-p4-error
+           (setq vc-p4-status (if (eq (car err) 'vc-p4-pending) 'pending 'error)
+                 vc-p4-last-error (error-message-string err))
+           (diff-hl-remove-overlays)
+           (vc-mode-line buffer-file-name 'P4)
+           nil)))
     (apply original args)))
 
 (defun vc-p4--gutter-destination (buffer)
   "Give BUFFER a name unique to the visiting buffer."
-  (format "%s<p4:%s>" (if (bufferp buffer) (buffer-name buffer) buffer)
-          (buffer-name)))
+  (let* ((name (format "%s<p4:%s>" (if (bufferp buffer) (buffer-name buffer) buffer)
+                       (buffer-name)))
+         (output (get-buffer-create name)))
+    (cl-pushnew output vc-p4--gutter-buffers)
+    name))
 
 (defun vc-p4--gutter-changes (original file backend &optional revision buffer)
   "Use a separate P4 output buffer for ORIGINAL's FILE and REVISION."
@@ -732,6 +780,18 @@ revision alone is not unique across Perforce clients or servers."
         destination)
     (funcall original file destination backend context)))
 
+(defun vc-p4--gutter-resolve (original value callback)
+  "Validate P4 results again when ORIGINAL invokes CALLBACK for VALUE."
+  (let* ((buffer (and (not (listp value)) (get-buffer value)))
+         (task (and buffer (buffer-local-value 'vc-p4--diff-owner-task buffer))))
+    (if (not task) (funcall original value callback)
+      (funcall original value
+               (lambda (changes)
+                 (when (and (buffer-live-p (vc-p4--diff-task-source task))
+                            (with-current-buffer (vc-p4--diff-task-source task)
+                              (vc-p4--diff-valid-p task)))
+                   (funcall callback changes)))))))
+
 (defun vc-p4--update-gutters ()
   "Refresh enabled gutters after P4 data becomes available."
   (when (bound-and-true-p diff-hl-mode)
@@ -739,6 +799,7 @@ revision alone is not unique across Perforce clients or servers."
 
 (with-eval-after-load 'diff-hl
   (advice-add 'diff-hl-update :around #'vc-p4--gutter-update)
+  (advice-add 'diff-hl--resolve :around #'vc-p4--gutter-resolve)
   (advice-add 'diff-hl-changes-buffer :around #'vc-p4--gutter-changes)
   (advice-add 'diff-hl-diff-buffer-with-reference :around #'vc-p4--gutter-buffer-diff)
   (add-hook 'vc-p4-update-hook #'vc-p4--update-gutters))
@@ -804,6 +865,10 @@ cached baselines and may run local diff; automatic gutters always use ASYNC."
         (when (and buffer-file-name
                  (or (eq buffer target)
                      (eq (vc-file-getprop buffer-file-name 'vc-backend) 'P4)))
+        (vc-file-setprop buffer-file-name 'vc-state nil)
+        (vc-file-setprop buffer-file-name 'vc-working-revision nil)
+        (setq vc-p4-status 'pending vc-mode " P4?")
+        (when (bound-and-true-p diff-hl-mode) (diff-hl-remove-overlays))
         (vc-p4--notify buffer-file-name (vc-p4--context buffer-file-name)))))))
 
 ;; Deliberately fail unsupported mutations rather than invoking generic fallbacks.
