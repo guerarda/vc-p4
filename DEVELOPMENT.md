@@ -9,7 +9,7 @@ Validate other environments using the workspace smoke check.
 ## Checks
 
 - Warning-free byte compilation.
-- 26 backend/process tests; 29 total including three real diff-hl consumer tests
+- 34 backend/process tests; 37 total including three real diff-hl consumer tests
   with mocked P4 retrieval.
 - 17 disposable-server tests covering actual metadata, byte retrieval, state,
   mappings, checkout models and seven gutter scenarios. Run against both
@@ -37,6 +37,11 @@ python3 scripts/p4_fixture.py --p4 .tools/p4 --p4d .tools/p4d \
 The fixture uses a temporary server root, loopback port, isolated configuration,
 users and clients. It verifies the server root and shuts down on exit. No private
 history export is necessary.
+
+The asynchronous command runner has isolated tests for cancellation, deadlines,
+bounded concurrency, raw output, environment capture and callback failures.
+It is not yet wired into automatic VC or diff-hl paths. These tests do not
+establish end-to-end input responsiveness.
 
 ## Compatibility and remaining scope
 

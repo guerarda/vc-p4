@@ -26,6 +26,128 @@
 (defvar vc-p4-last-error nil "Most recent discovery failure, for diagnostics.")
 (define-error 'vc-p4-error "Perforce command failed")
 
+(defcustom vc-p4-max-processes 4 "Maximum concurrent asynchronous P4 commands."
+  :type 'natnum)
+(cl-defstruct (vc-p4--job (:constructor vc-p4--make-job))
+  directory command environment exec-path callback timeout
+  process stderr-process output errors timer result done)
+(defvar vc-p4--queue nil)
+(defvar vc-p4--active nil)
+(defvar vc-p4--dispatch-timer nil)
+
+(defun vc-p4--schedule ()
+  "Schedule queued commands outside the initiating call."
+  (unless vc-p4--dispatch-timer
+    (setq vc-p4--dispatch-timer (run-at-time 0 nil #'vc-p4--dispatch))))
+
+(defun vc-p4--finish (job status &optional detail)
+  "Finish JOB exactly once with STATUS and optional DETAIL.
+Release all resources before delivering the result to its callback."
+  (unless (vc-p4--job-done job)
+    (setf (vc-p4--job-done job) t)
+    (let ((result (list :status status :detail detail
+                        :exit-code (when (and (vc-p4--job-process job)
+                                              (memq (process-status (vc-p4--job-process job))
+                                                    '(exit signal)))
+                                     (process-exit-status (vc-p4--job-process job)))
+                        :stdout (if (buffer-live-p (vc-p4--job-output job))
+                                    (with-current-buffer (vc-p4--job-output job)
+                                      (buffer-string)) "")
+                        :stderr (if (buffer-live-p (vc-p4--job-errors job))
+                                    (with-current-buffer (vc-p4--job-errors job)
+                                      (buffer-string)) ""))))
+      (when (timerp (vc-p4--job-timer job))
+        (cancel-timer (vc-p4--job-timer job)))
+      (setf (vc-p4--job-timer job) nil)
+      (dolist (process (list (vc-p4--job-process job)
+                            (vc-p4--job-stderr-process job)))
+        (when (processp process)
+          (set-process-sentinel process #'ignore)
+          (delete-process process)))
+      (dolist (buffer (list (vc-p4--job-output job) (vc-p4--job-errors job)))
+        (when (buffer-live-p buffer) (kill-buffer buffer)))
+      (setq vc-p4--active (delq job vc-p4--active)
+            vc-p4--queue (delq job vc-p4--queue))
+      (setf (vc-p4--job-result job) result)
+      (when vc-p4--queue (vc-p4--schedule))
+      (condition-case err
+          (funcall (vc-p4--job-callback job) result)
+        (error (message "P4 completion callback failed: %s"
+                        (error-message-string err)))))))
+
+(defun vc-p4--completed (job)
+  "Deliver JOB only after both output streams have closed."
+  (let ((process (vc-p4--job-process job))
+        (stderr (vc-p4--job-stderr-process job)))
+    (when (and process (memq (process-status process) '(exit signal failed))
+               stderr (not (process-live-p stderr)))
+      (vc-p4--finish job (if (and (eq (process-status process) 'exit)
+                                (zerop (process-exit-status process)))
+                               'success 'error)))))
+
+(defun vc-p4--start (job)
+  "Start JOB with the environment captured at submission."
+  (push job vc-p4--active)
+  (condition-case err
+      (let ((default-directory (vc-p4--job-directory job))
+            (process-environment (vc-p4--job-environment job))
+            (exec-path (vc-p4--job-exec-path job)))
+        (setf (vc-p4--job-output job) (generate-new-buffer " *vc-p4-async-output*")
+              (vc-p4--job-errors job) (generate-new-buffer " *vc-p4-async-error*"))
+        (dolist (buffer (list (vc-p4--job-output job) (vc-p4--job-errors job)))
+          (with-current-buffer buffer (set-buffer-multibyte nil)))
+        (setf (vc-p4--job-stderr-process job)
+              (make-pipe-process
+               :name "vc-p4-stderr" :buffer (vc-p4--job-errors job)
+               :coding 'no-conversion :noquery t
+               :sentinel (lambda (_process _event) (vc-p4--completed job))))
+        (setf (vc-p4--job-process job)
+              (make-process
+               :name "vc-p4-async" :buffer (vc-p4--job-output job)
+               :stderr (vc-p4--job-stderr-process job)
+               :command (vc-p4--job-command job)
+               :connection-type 'pipe :coding 'no-conversion :noquery t
+               :sentinel (lambda (_process _event) (vc-p4--completed job))))
+        (condition-case eof-error
+            (process-send-eof (vc-p4--job-process job))
+          (error (when (process-live-p (vc-p4--job-process job))
+                   (signal (car eof-error) (cdr eof-error)))))
+        (unless (vc-p4--job-done job)
+          (setf (vc-p4--job-timer job)
+                (run-at-time (vc-p4--job-timeout job) nil
+                             #'vc-p4--finish job 'timeout
+                             "P4 timed out; check connection/login"))
+          (vc-p4--completed job)))
+    (error (vc-p4--finish job 'error (error-message-string err)))))
+
+(defun vc-p4--dispatch ()
+  "Start queued jobs up to the concurrency limit."
+  (setq vc-p4--dispatch-timer nil)
+  (while (and vc-p4--queue (< (length vc-p4--active)
+                             (max 1 vc-p4-max-processes)))
+    (vc-p4--start (pop vc-p4--queue))))
+
+(defun vc-p4--run-async (directory callback &rest args)
+  "Queue P4 ARGS in DIRECTORY and return a cancellable job immediately.
+CALLBACK receives a plist with :status (success, error, timeout or cancelled),
+:stdout and :stderr as raw bytes, :exit-code and optional :detail.
+Normal completion is deferred.  Cancellation delivers its callback immediately.
+The timeout begins when the job starts; queued jobs consume no processes.
+Callbacks must tolerate obsolete consumers and must not block."
+  (let ((job (vc-p4--make-job
+              :directory (file-name-as-directory (expand-file-name directory))
+              :command (cons vc-p4-program (copy-sequence args))
+              :environment (copy-sequence process-environment)
+              :exec-path (copy-sequence exec-path)
+              :callback callback :timeout vc-p4-command-timeout)))
+    (setq vc-p4--queue (nconc vc-p4--queue (list job)))
+    (vc-p4--schedule)
+    job))
+
+(defun vc-p4--cancel (job)
+  "Cancel queued or running JOB, delivering exactly one completion."
+  (vc-p4--finish job 'cancelled))
+
 (defun vc-p4--run (directory &rest args)
   "Run P4 with ARGS in DIRECTORY, returning stdout as bytes.
 Use pipes and argument vectors, never a shell.  Enforce a deadline and
@@ -63,7 +185,7 @@ clean up processes and buffers on errors and keyboard quit."
                                   (with-current-buffer out (buffer-string))))))
           (with-current-buffer out (buffer-string)))
       (when (and process (process-live-p process)) (delete-process process))
-      (when-let ((stderr-process (get-buffer-process err)))
+      (when-let* ((stderr-process (get-buffer-process err)))
         (delete-process stderr-process))
       (kill-buffer out)
       (kill-buffer err))))

@@ -202,3 +202,137 @@
                (lambda (&rest _) (signal 'vc-p4-error '("TCP connect failed")))))
       (should-not (vc-p4-registered "/tmp/file"))
       (should (string-match-p "TCP connect failed" vc-p4-last-error)))))
+
+(defmacro vc-p4-test-async (&rest body)
+  "Run BODY with an isolated asynchronous runner and guaranteed cleanup."
+  (declare (indent 0))
+  `(let ((vc-p4--queue nil) (vc-p4--active nil)
+         (vc-p4--dispatch-timer nil) (vc-p4-program "/bin/sh")
+         (vc-p4-command-timeout 2) (vc-p4-max-processes 1))
+     (unwind-protect (progn ,@body)
+       (dolist (job (append vc-p4--queue vc-p4--active)) (vc-p4--cancel job))
+       (when vc-p4--dispatch-timer (cancel-timer vc-p4--dispatch-timer)))))
+
+(defun vc-p4-test-await (predicate)
+  "Pump test events until PREDICATE succeeds, with a finite deadline."
+  (let ((deadline (+ (float-time) 4)))
+    (while (and (not (funcall predicate)) (< (float-time) deadline))
+      (accept-process-output nil 0.01))
+    (should (funcall predicate))))
+
+(ert-deftest vc-p4-async-preserves-bytes-arguments-and-stderr ()
+  (vc-p4-test-async
+    (let* (result
+           (job (vc-p4--run-async
+                 temporary-file-directory (lambda (value) (setq result value))
+                 "-c" "printf '%s' \"$1\"; printf '\\000\\377'; printf diagnostic >&2"
+                 "test" "a b; $(false) * # @")))
+      (should-not result)
+      (vc-p4-test-await (lambda () result))
+      (should (eq (plist-get result :status) 'success))
+      (should (equal (plist-get result :stdout)
+                     (concat "a b; $(false) * # @" (unibyte-string 0 255))))
+      (should (equal (plist-get result :stderr) "diagnostic"))
+      (should-not (buffer-live-p (vc-p4--job-output job)))
+      (should-not (buffer-live-p (vc-p4--job-errors job)))
+      (should-not (vc-p4--job-timer job)))))
+
+(ert-deftest vc-p4-async-returns-without-waiting-and-cancels-once ()
+  (vc-p4-test-async
+    (let ((calls 0) result job)
+      ;; A wait loop in submission or dispatch is a regression even if it
+      ;; pumps timers.  Event pumping belongs only to the test harness.
+      (cl-letf (((symbol-function 'accept-process-output)
+                 (lambda (&rest _) (ert-fail "Runner waited for output"))))
+        (setq job (vc-p4--run-async
+                   temporary-file-directory
+                   (lambda (value) (cl-incf calls) (setq result value))
+                   "-c" "while :; do :; done"))
+        (cancel-timer vc-p4--dispatch-timer)
+        (vc-p4--dispatch)
+        (should (process-live-p (vc-p4--job-process job)))
+        (should-not result)
+        (vc-p4--cancel job))
+      (vc-p4--cancel job)
+      (vc-p4--completed job)
+      (should (= calls 1))
+      (should (eq (plist-get result :status) 'cancelled))
+      (should-not vc-p4--active))))
+
+(ert-deftest vc-p4-async-timeout-releases-queue ()
+  (vc-p4-test-async
+    (let* ((vc-p4-command-timeout 0.1) (calls 0) first second
+           (job (vc-p4--run-async
+                 temporary-file-directory
+                 (lambda (value) (cl-incf calls) (setq first value))
+                 "-c" "while :; do :; done")))
+      (vc-p4--run-async temporary-file-directory (lambda (value) (setq second value))
+                        "-c" "printf next")
+      (vc-p4-test-await (lambda () (vc-p4--job-process job)))
+      (should (= (length vc-p4--active) 1))
+      (should (= (length vc-p4--queue) 1))
+      (vc-p4-test-await (lambda () second))
+      (should (eq (plist-get first :status) 'timeout))
+      (should (equal (plist-get second :stdout) "next"))
+      (vc-p4--cancel job)
+      (should (= calls 1))
+      (should-not vc-p4--active))))
+
+(ert-deftest vc-p4-async-cancel-before-start ()
+  (vc-p4-test-async
+    (let* ((calls 0)
+           (job (vc-p4--run-async temporary-file-directory
+                                 (lambda (_) (cl-incf calls)) "-c" "exit 99")))
+      (vc-p4--cancel job)
+      (vc-p4--cancel job)
+      (should (= calls 1))
+      (should-not (vc-p4--job-process job))
+      (should-not vc-p4--queue))))
+
+(ert-deftest vc-p4-async-reports-exit-and-start-failures ()
+  (vc-p4-test-async
+    (let (result)
+      (vc-p4--run-async temporary-file-directory (lambda (value) (setq result value))
+                        "-c" "printf partial; printf denied >&2; exit 7")
+      (vc-p4-test-await (lambda () result))
+      (should (eq (plist-get result :status) 'error))
+      (should (= (plist-get result :exit-code) 7))
+      (should (equal (plist-get result :stderr) "denied"))
+      (setq result nil)
+      (let ((vc-p4-program "/nonexistent/p4"))
+        (vc-p4--run-async temporary-file-directory (lambda (value) (setq result value))))
+      (vc-p4-test-await (lambda () result))
+      (should (eq (plist-get result :status) 'error))
+      (should-not vc-p4--active))))
+
+(ert-deftest vc-p4-async-captures-submission-environment ()
+  (vc-p4-test-async
+    (let ((process-environment (copy-sequence process-environment)) result)
+      (setenv "VC_P4_TEST_VALUE" "submitted")
+      (vc-p4--run-async temporary-file-directory (lambda (value) (setq result value))
+                        "-c" "printf '%s' \"$VC_P4_TEST_VALUE\"")
+      (setenv "VC_P4_TEST_VALUE" "changed")
+      (vc-p4-test-await (lambda () result))
+      (should (equal (plist-get result :stdout) "submitted")))))
+
+(ert-deftest vc-p4-async-drains-large-output ()
+  (vc-p4-test-async
+    (let (result)
+      (vc-p4--run-async
+       temporary-file-directory (lambda (value) (setq result value))
+       "-c" "i=0; while [ $i -lt 10000 ]; do printf abcdefgh; printf 12345678 >&2; i=$((i+1)); done")
+      (vc-p4-test-await (lambda () result))
+      (should (eq (plist-get result :status) 'success))
+      (should (= (length (plist-get result :stdout)) 80000))
+      (should (= (length (plist-get result :stderr)) 80000)))))
+
+(ert-deftest vc-p4-async-callback-error-does-not-stop-queue ()
+  (vc-p4-test-async
+    (let (result)
+      (vc-p4--run-async temporary-file-directory (lambda (_) (error "Consumer failed"))
+                        "-c" "exit 0")
+      (vc-p4--run-async temporary-file-directory (lambda (value) (setq result value))
+                        "-c" "printf next")
+      (vc-p4-test-await (lambda () result))
+      (should (equal (plist-get result :stdout) "next"))
+      (should-not vc-p4--active))))
