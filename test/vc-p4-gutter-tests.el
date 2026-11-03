@@ -77,6 +77,49 @@
 				(should (equal latest (vc-p4-test-line-overlays))))
 			      (should (equal (vc-p4-test-hunks) '((3 insert)))))))))
 
+(ert-deftest vc-p4-gutter-async-completion-without-private-buffer-helper ()
+  (vc-p4-test-with-file "one\nchanged\nthree\n"
+    (with-temp-buffer
+      (insert-file-contents file)
+      (setq buffer-file-name file)
+      (setq-local diff-hl-mode t)
+      (let* ((source (current-buffer))
+             (indirect (make-indirect-buffer source " *p4-indirect*" t))
+             (output (generate-new-buffer " *p4-test-diff*"))
+             (helper (and (fboundp 'diff-hl--target-buffer)
+                          (symbol-function 'diff-hl--target-buffer)))
+             process callback-error)
+        (unwind-protect
+            (progn
+              (setq process (make-process :name "p4-test-diff" :buffer output
+                                          :command '("cat") :connection-type 'pipe
+                                          :noquery t :sentinel #'ignore))
+              ;; Isolate acquisition, but use diff-hl's real asynchronous
+              ;; resolver, diff parser and process completion callback.
+              (cl-letf (((symbol-function 'diff-hl-changes)
+                         (lambda () `((:working . ,output)))))
+                (vc-p4-gutter--update))
+              (let ((sentinel (process-sentinel process)))
+                (set-process-sentinel
+                 process (lambda (proc event)
+                           (condition-case err (funcall sentinel proc event)
+                             (error (setq callback-error err))))))
+              (fmakunbound 'diff-hl--target-buffer)
+              (process-send-string process
+                                   "--- base\n+++ working\n@@ -2 +2 @@\n-two\n+changed\n")
+              (process-send-eof process)
+              (vc-p4-test-await
+               (lambda () (or callback-error
+                              (with-current-buffer source (vc-p4-test-hunks)))))
+              (should-not callback-error)
+              (dolist (buffer (list source indirect))
+                (with-current-buffer buffer
+                  (should (equal (vc-p4-test-hunks) '((2 change)))))))
+          (when helper (fset 'diff-hl--target-buffer helper))
+          (when (process-live-p process) (delete-process process))
+          (kill-buffer output)
+          (kill-buffer indirect))))))
+
 (ert-deftest vc-p4-gutter-non-p4-update-is-not-intercepted ()
   (vc-p4-test-with-file "contents"
     (with-temp-buffer

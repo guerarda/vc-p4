@@ -23,7 +23,6 @@
 (declare-function diff-hl-changes "diff-hl")
 (declare-function diff-hl--resolve "diff-hl")
 (declare-function diff-hl-adjust-changes "diff-hl")
-(declare-function diff-hl--target-buffer "diff-hl")
 (declare-function diff-hl--autohide-margin "diff-hl")
 
 (defcustom vc-p4-gutter-side 'auto
@@ -145,9 +144,9 @@ win where reference and working changes overlap, as in diff-hl."
                          (equal stamp (vc-p4--file-stamp file))
                          (cl-every #'vc-p4--diff-valid-p tasks))
                 (let ((adjusted (diff-hl-adjust-changes ref work))
-                      (base (diff-hl--target-buffer source)))
+                      (base (or (buffer-base-buffer source) source)))
                   (dolist (buffer (buffer-list))
-                    (when (and (eq (diff-hl--target-buffer buffer) base)
+                    (when (and (eq (or (buffer-base-buffer buffer) buffer) base)
                                (buffer-local-value 'diff-hl-mode buffer))
                       (with-current-buffer buffer
                         (vc-p4-gutter--reconcile work adjusted))))))))))))))

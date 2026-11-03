@@ -9,8 +9,8 @@ Validate other environments using the workspace smoke check.
 ## Checks
 
 - Warning-free byte compilation.
-- 46 backend/process tests; 66 total including three real diff-hl consumer tests,
-  eight incremental-rendering tests and nine fault/input responsiveness tests.
+- 46 backend/process tests; 67 total including three real diff-hl consumer tests,
+  nine incremental-rendering tests and nine fault/input responsiveness tests.
 - 18 disposable-server tests covering actual metadata, byte retrieval, state,
   mappings, checkout models and eight gutter scenarios. Run against both
   case-sensitive and case-insensitive servers; the alias-case assertion applies
