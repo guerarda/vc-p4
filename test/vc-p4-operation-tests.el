@@ -209,3 +209,68 @@
               (should (vc-p4--operation-error operation))
               (should (file-directory-p recovery)))
           (delete-directory recovery t))))))
+
+(ert-deftest vc-p4-operation-sequence-retains-one-recovery-copy-on-partial-failure ()
+  (vc-p4-test-operation
+    (let* ((operation (vc-p4--operate "move" (list file)
+                                       '(("edit" "source") ("move" "source" "target")) nil t))
+           (first job))
+      (funcall (vc-p4--job-prepare first))
+      (let ((recovery (vc-p4--operation-recovery operation)))
+        (unwind-protect
+            (progn
+              (vc-p4-test-complete-operation first)
+              (should-not (eq job first))
+              (should (eq (vc-p4--operation-for file) operation))
+              (should (equal (vc-p4--job-command job) '("-Mj" "-ztag" "move" "source" "target")))
+              (funcall (vc-p4--job-prepare job))
+              (should (equal (vc-p4--operation-recovery operation) recovery))
+              (vc-p4-test-complete-operation job '(:status error :stderr "move denied"))
+              (should-not (vc-p4--operation-for file))
+              (should (equal (vc-p4--local-bytes (expand-file-name "1" recovery)) "original\n")))
+          (delete-directory recovery t))))))
+
+(ert-deftest vc-p4-move-defers-rename-and-preserves-newer-buffer-text ()
+  (vc-p4-test-operation
+    (let ((new (concat file "-moved")))
+      (unwind-protect
+          (cl-letf (((symbol-function 'vc-p4--workspace-identity) (lambda (_) '("server" "client" "root")))
+                    ((symbol-function 'vc-p4--stat) (lambda (_) '((action . "edit") (haveRev . "1"))))
+                    ((symbol-function 'vc-p4-state) (lambda (_) 'edited)))
+            (let ((operation (vc-rename-file file new)))
+              (funcall (vc-p4--job-prepare job))
+              (should (equal buffer-file-name file))
+              (should (file-exists-p file))
+              (should-not (file-exists-p new))
+              (insert "pending typing ")
+              (let ((undo buffer-undo-list))
+                (rename-file file new)
+                (vc-p4-test-complete-operation job)
+                (should-not (vc-p4--operation-error operation))
+                (should (equal buffer-file-name new))
+                (should (equal (buffer-string) "pending typing original\n"))
+                (should (eq undo buffer-undo-list))
+                (should (buffer-modified-p))
+                (should-not (vc-p4--operation-for new)))))
+        (when (file-exists-p new) (rename-file new file))
+        (set-visited-file-name file t t)))))
+
+(ert-deftest vc-p4-move-refuses-target-arriving-while-queued ()
+  (vc-p4-test-operation
+    (let ((new (concat file "-new")))
+      (unwind-protect
+          (cl-letf (((symbol-function 'vc-p4--workspace-identity) (lambda (_) 'same))
+                    ((symbol-function 'vc-p4--stat) (lambda (_) '((action . "edit"))))
+                    ((symbol-function 'vc-p4-state) (lambda (_) 'edited)))
+            (vc-rename-file file new)
+            (with-temp-file new (insert "do not overwrite\n"))
+            (should-error (funcall (vc-p4--job-prepare job)) :type 'user-error)
+            (vc-p4-cancel-operation)
+            (should (equal buffer-file-name file))
+            (should (equal (vc-p4--local-bytes new) "do not overwrite\n")))
+        (when (file-exists-p new) (delete-file new))))))
+
+(ert-deftest vc-p4-move-delegates-other-backends ()
+  (vc-p4-test-operation
+    (vc-file-setprop file 'vc-backend 'Git)
+    (should (equal (vc-p4--vc-rename-file #'list file "new") (list file "new")))))
