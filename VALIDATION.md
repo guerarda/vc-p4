@@ -50,8 +50,14 @@ loaded an older backend, restart with the new checkout or explicitly evaluate
    and move the cursor. Refresh should return immediately, including on a cold
    cache. Repeat after leaving the buffer idle long enough for metadata to expire.
 2. Save a disposable edit, then keep typing/navigation going while the gutter
-   updates. Repeat with flydiff enabled and unsaved edits. Old results must not
-   overwrite newer markers or replace buffer text.
+   updates. Repeat with flydiff enabled and unsaved edits. Add a change away
+   from an existing marker: the existing marker should remain stable through
+   the completed update, not disappear and return. Repeat refresh without any
+   edits. Undo a change and confirm only its marker disappears once confirmed.
+   Old results must not overwrite newer markers or replace buffer text.
+   If Flycheck is enabled, create and fix a diagnostic on a changed line. Both
+   indicators should remain visible on separate sides. P4's auto placement
+   should not move when individual diagnostics appear or disappear.
 3. During a normal external sync that you already intend to run, keep editing
    an unrelated buffer. Then refresh the affected test file. Do not manufacture
    destructive sync/revert operations just for this check. Preserve unsaved work

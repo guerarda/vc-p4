@@ -89,10 +89,18 @@ After an external `p4 sync`, `p4 revert` or `p4 submit`:
    and gutters. The command returns immediately; the results arrive later.
 
 `P4?` in the mode line means work is pending; `P4!` means retrieval or diff
-failed. During a save-triggered refresh, existing markers remain visible until
-the replacement result is ready. Pending data is not reported as a confirmed clean file. Closing a
+failed. The last gutter display remains visible until a current result arrives,
+including during explicit refresh. Unchanged line markers are retained in place;
+only changed markers are replaced. A confirmed clean result removes its markers.
+Pending or failed data is not reported as a confirmed clean file. Closing a
 buffer cancels its pending work. External sync processes are not cancelled,
 and the backend never replaces unsaved buffer text.
+
+When Flycheck is enabled, P4 markers automatically use the opposite side if
+Flycheck uses the same side as diff-hl. The side stays fixed as diagnostics
+appear and disappear; Flycheck's settings are unchanged. Set
+`vc-p4-gutter-side` to `left` or `right` to choose a fixed side, or leave it at
+`auto`. Using the same fringe as diagnostics can hide one of the indicators.
 
 For a guided check and uninstall instructions, see
 [the workspace smoke check](VALIDATION.md).

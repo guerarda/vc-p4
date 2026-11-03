@@ -9,8 +9,8 @@ Validate other environments using the workspace smoke check.
 ## Checks
 
 - Warning-free byte compilation.
-- 46 backend/process tests; 58 total including three real diff-hl consumer tests
-  with mocked P4 retrieval and nine fault/input responsiveness tests.
+- 46 backend/process tests; 66 total including three real diff-hl consumer tests,
+  eight incremental-rendering tests and nine fault/input responsiveness tests.
 - 18 disposable-server tests covering actual metadata, byte retrieval, state,
   mappings, checkout models and eight gutter scenarios. Run against both
   case-sensitive and case-insensitive servers; the alias-case assertion applies
@@ -55,12 +55,32 @@ GUI rendering benchmark. The GUI/private-workspace check remains in VALIDATION.m
 
 ## Compatibility and remaining scope
 
-The diff-hl source is unchanged. P4-only advice recognizes `needs-merge`, scopes
-revision-cache names, selects asynchronous saved/unsaved diff paths, separates
-output buffers, and rejects obsolete results immediately before overlay updates.
-A save hook invalidates VC state before diff-hl runs. Buffers show pending/error
-status instead of claiming unknown data is clean. Same-workspace save updates
-retain existing gutter markers until the replacement result is ready.
+The diff-hl source is unchanged. Backend acquisition remains in `vc-p4.el`;
+`vc-p4-gutter.el` handles completed-result validation and incremental display.
+A complete current result is reconciled against existing line and hunk overlays
+with redisplay inhibited during the commit. Identical results perform no overlay
+creation, deletion, movement or property writes. Hunk navigation metadata is
+updated separately, so editing one line does not destroy its neighbours' markers.
+Older completions cannot repaint newer results. The old global advice on
+`diff-hl--resolve` has been removed; Git and other backend updates are untouched.
+Pending and error states retain the last display, with mode-line status. A clean
+result removes obsolete markers. Mode disable and workspace changes invalidate
+the old display. The save regression checks overlay identity through completion,
+not merely during the pending interval, with flydiff both enabled and disabled.
+
+Optional actual Flycheck coexistence test:
+
+```sh
+make test-flycheck EMACS=/path/to/emacs DIFF_HL_DIR=/path/to/diff-hl \
+  FLYCHECK_DIR=/path/to/flycheck
+```
+
+Tested against Flycheck source `a76f054fd63333e6586e50a9a531ee6669b19758`.
+Its real warning overlays are repeatedly created and removed on both fringe
+sides; P4 line overlays and their display strings retain identity. Auto placement
+uses the diagnostic mode's configured side, never individual diagnostic presence.
+These tests inspect overlay operations and display specifications; final pixel
+appearance in the user's GUI still needs the workspace smoke check.
 
 Metadata has a short TTL. Pristine numeric revisions are cached in memory by
 configuration, depot path and revision. P4CONFIG/P4ENVIRO attribute changes
