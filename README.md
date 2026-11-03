@@ -7,9 +7,9 @@ Changes are compared with each file's synced Perforce revision (`#have`), so
 newer changes in the depot do not appear as your local edits. The backend uses
 the `p4` command-line client and integrates with Emacs's built-in VC interface.
 
-**Status: experimental.** Gutter highlighting and read-only VC operations are
-implemented. Continue using the P4 CLI for checkout, add, revert and submit;
-those operations are not yet implemented through VC.
+**Status: experimental.** Gutter highlighting and asynchronous checkout, add,
+revert, delete and move are implemented through Emacs VC. Continue using the
+P4 CLI for submit, changelist management and other depot workflows.
 
 ## Features
 
@@ -20,6 +20,7 @@ those operations are not yet implemented through VC.
 - Pristine revision retrieval and unified diffs against the synced revision.
 - Cached revision contents and explicit refresh after external P4 commands.
 - Background discovery, revision retrieval and gutter diffs with timeouts and cancellation.
+- Native VC file operations with deferred buffer updates and failure recovery.
 
 ## Requirements
 
@@ -76,10 +77,38 @@ retrieval. They remain asynchronous even if another package disables
 
 Open a versioned file in your Perforce workspace. If highlighting is not
 already enabled for the buffer, run `M-x diff-hl-mode`. In a workspace that
-requires checkout, use `p4 edit` before editing the file.
+requires checkout, use `C-x v v` on a clean file before editing it. The buffer
+becomes writable after P4 confirms the checkout. `M-x vc-p4-edit` explicitly
+opens the current file for edit, including in an allwrite workspace.
 
 Save an edit to see its gutter marker, or enable flydiff to see unsaved changes.
 Use `M-x diff-hl-next-hunk` and `M-x diff-hl-previous-hunk` to navigate changes.
+
+| Operation | Command |
+| --- | --- |
+| Open for edit | `C-x v v` on a clean file, or `M-x vc-p4-edit` |
+| Add a new file | `C-x v i` (`vc-register`) |
+| Revert saved changes | `C-x v u` (`vc-revert`), with confirmation |
+| Delete a tracked file | `M-x vc-delete-file`, with confirmation |
+| Move a tracked or added file | `M-x vc-rename-file` |
+| Cancel this file's operation | `M-x vc-p4-cancel-operation` |
+
+Commands return while P4 runs. If discovery or a required baseline is still
+pending, retry the command when it is ready. Revert, delete and move require
+saved buffers; delete also requires no local content changes. Saves of affected
+files are blocked while these operations run, but typing and navigation remain
+available. Completion preserves any newer buffer edits. Moving a file updates
+its visiting buffer's name only after success, and reverting a move restores the
+original name. Reverting an addition keeps its local contents.
+
+Mutations refresh the affected files without clearing unrelated caches. A failed
+or cancelled destructive operation retains recovery copies in a temporary
+directory reported in `*Messages*`; `files.el` there maps original paths to
+numbered copies. Copy out anything you need before temporary files are cleaned
+by the system. Cancellation stops this client's command; P4 may already have
+changed server or workspace state. Check `p4 opened` and the refreshed VC state
+before retrying. For example, a failed move can leave its source opened for edit.
+There is no automatic rollback of partial operations.
 
 After an external `p4 sync`, `p4 revert` or `p4 submit`:
 
@@ -93,7 +122,8 @@ failed. The last gutter display remains visible until a current result arrives,
 including during explicit refresh. Unchanged line markers are retained in place;
 only changed markers are replaced. A confirmed clean result removes its markers.
 Pending or failed data is not reported as a confirmed clean file. Closing a
-buffer cancels its pending work. External sync processes are not cancelled,
+buffer cancels its pending reads and diffs; explicitly cancel a mutation before
+closing its buffer if you want to stop it. External sync processes are not cancelled,
 and the backend never replaces unsaved buffer text.
 
 When Flycheck is enabled, P4 markers automatically use the opposite side if
@@ -107,7 +137,11 @@ For a guided check and uninstall instructions, see
 
 ## Limitations
 
-- Checkout, add, revert and submit through Emacs VC are not implemented yet.
+- Submit, changelist management and `vc-dir` are not implemented yet.
+- File operations support individual local paths. Directory operations,
+  cross-workspace moves and revision-changing checkout use the P4 CLI.
+- P4 revert confirms the files to discard without a synchronous diff preview.
+  Use `C-x v =` to inspect changes before reverting.
 - Automatic P4 queries and gutter diffs are asynchronous. Explicit synchronous
   VC consumers require cached revisions and report pending data instead of
   waiting; retry after retrieval finishes. Explicit synchronous local diff

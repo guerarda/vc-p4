@@ -22,8 +22,14 @@ The CLI must inherit the same P4CONFIG/environment as your terminal. From the
 workspace terminal, `p4 info` should name the expected client/server. Use the
 normal `p4 login` flow if needed; never include authentication tickets or passwords in reports.
 No persistent Emacs configuration changes are required. If this session already
-loaded an older backend, restart with the new checkout or explicitly evaluate
-`(load-file "/path/to/p4vc/vc-p4.el")` before testing.
+loaded an older backend, restart with the new checkout or, once any running
+mutation has finished, explicitly reload the backend and its companion modules:
+
+```elisp
+(load-file "/path/to/p4vc/vc-p4.el")
+(load-file "/path/to/p4vc/vc-p4-ops.el")
+(load-file "/path/to/p4vc/vc-p4-gutter.el")
+```
 
 ## Five-minute check
 
@@ -31,18 +37,44 @@ loaded an older backend, restart with the new checkout or explicitly evaluate
    to enable highlighting if it is off. A clean file should
    have no markers after pending work completes. The initial mode line may show
    `P4?`; `M-: (vc-backend buffer-file-name)` should eventually return `P4`.
-2. In the terminal, run `p4 edit path/to/file`. Revisit/revert the Emacs buffer
-   to refresh its read-only flag, then change one line and save. Expect one
+2. Use `C-x v v` on the clean file, or `M-x vc-p4-edit`. After checkout completes,
+   the buffer should become writable. Change one line and save. Expect one
    change marker at that line. Insert/delete a line and check the corresponding
    markers. `M-x diff-hl-next-hunk` should navigate to a changed hunk.
 3. Run `M-x diff-hl-flydiff-mode` to enable unsaved highlighting. Make another
    edit without saving; expect its marker after the idle delay. This mode is optional.
-4. Restore this test-only file using `p4 revert path/to/file`, then
-   `M-x revert-buffer`, `M-x vc-p4-refresh`, and `M-x diff-hl-update`.
-   Expect no markers. Discard only the disposable edits made in this check.
+4. Save the disposable edits, then use `C-x v u` and confirm the selected test
+   file. Expect its synced contents, the appropriate read-only flag, and no
+   markers after completion. Discard only the disposable edits made in this check.
 5. If a safely available file has an older have revision than head, check that
    local edits are compared with have, not head. No need to change production
    history or sync backwards just to manufacture this case; it is automated.
+
+## Native editing lifecycle
+
+Use only a disposable tracked file with no unrelated work. Check `p4 opened`
+alongside VC state; nothing in this check submits a changelist.
+
+1. Run the checkout/save/revert steps above. Type in another buffer while each
+   command is pending. In an allwrite workspace, also try `M-x vc-p4-edit`.
+2. Create a disposable file, insert text, and use `C-x v i`. If discovery is
+   pending, retry after it completes; it should not offer to create a repository.
+   Verify an `add` action with `p4 opened`. Revert it using `C-x v u`: the file
+   and its contents should remain, and its pending add should disappear.
+3. Move the disposable tracked file using `M-x vc-rename-file` to a new unused
+   name in the same workspace. The buffer name should follow only after success.
+   Use `C-x v u` on the moved-to file; retry if its move-partner mapping is still
+   being retrieved. Expect the original name and contents to return.
+4. Delete the clean tracked test file with `M-x vc-delete-file`. Expect a pending
+   delete and a retained read-only visiting buffer. Use `C-x v u` there to restore
+   the file. Confirm no test actions remain with `p4 opened`.
+
+Report pauses, unexpected prompts, incorrect buffer names/permissions, missing
+eventual gutters, or sanitized `vc-p4-last-error`. Do not manufacture an outage,
+exclusive-lock conflict or destructive external race: automated tests cover these.
+For a failed or cancelled operation, keep the recovery directory reported in
+`*Messages*` until you have checked actual files and opened actions. Cancellation
+does not roll back a command that P4 has already applied.
 
 ## Responsiveness check
 
