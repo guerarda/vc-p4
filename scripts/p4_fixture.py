@@ -80,6 +80,8 @@ def run_fixture(args):
                 initial_files = {
                     "clean.txt": b"unchanged\n",
                     "exclusive.txt": b"exclusive\n",
+                    "ops-edit.txt": b"edit lifecycle\n",
+                    "ops-lock.txt": b"exclusive lifecycle\n",
                     "conflict.txt": b"original\n",
                     "stale.txt": b"original\n",
                     "café.txt": b"unicode path\n",
@@ -103,6 +105,7 @@ def run_fixture(args):
                     p4run("add", "-f", str(path))
                 p4run("add", str(alice_file))
                 p4run("reopen", "-t", "text+l", str(root / "alice" / "exclusive.txt"))
+                p4run("reopen", "-t", "text+l", str(root / "alice" / "ops-lock.txt"))
                 p4run("submit", "-d", "fixture: initial contents")
                 p4run("sync", "//depot/...", user="bob")
                 bob_file = root / "bob" / "sample.txt"

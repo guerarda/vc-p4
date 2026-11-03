@@ -13,7 +13,9 @@ if mode in {"auth", "outage"}:
     print("Login expired" if mode == "auth" else "TCP connect failed", file=sys.stderr)
     sys.exit(1)
 args = [arg for arg in sys.argv[1:] if arg not in {"-Mj", "-ztag"}]
-if args and args[0] in {"fstat", "where", "info", "client", "print"}:
+if args and args[0] == "edit":
+    print(json.dumps({"action": "edit", "clientFile": args[-1]}))
+elif args and args[0] in {"fstat", "where", "info", "client", "print"}:
     command = args[0]
     if command == "print":
         sys.stdout.buffer.write(b"one\ntwo\nthree\n")

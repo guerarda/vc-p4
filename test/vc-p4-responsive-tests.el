@@ -1,5 +1,6 @@
 ;;; vc-p4-responsive-tests.el --- Input responsiveness gates -*- lexical-binding: t; -*-
 (require 'vc-p4-gutter-tests)
+(require 'vc-p4-operation-tests)
 (defconst vc-p4-test-worker
   (expand-file-name "fault-worker.py" (file-name-directory load-file-name)))
 (defvar vc-p4-test-command nil)
@@ -62,6 +63,18 @@
       (should-not (eq (vc-file-getprop file 'vc-state) 'up-to-date))
       (vc-p4-test-await (lambda () (eq (vc-file-getprop file 'vc-backend) 'P4)))
       (vc-p4-test-await (lambda () (eq (vc-file-getprop file 'vc-state) 'up-to-date))))))
+
+(ert-deftest vc-p4-input-checkout-preserves-typing-during-slow-command ()
+  (vc-p4-test-faults
+    (save-window-excursion
+      (find-file file)
+      (vc-p4-test-await (lambda () (eq (vc-file-getprop file 'vc-state) 'up-to-date)))
+      (setenv "VC_P4_FAULT_DELAY" "0.6")
+      (vc-p4-test-queued-input (lambda () (vc-checkout file)))
+      (vc-p4-test-await (lambda () (not (vc-p4--operation-for file))))
+      (should (string-match-p "typed" (buffer-string)))
+      (should (buffer-modified-p))
+      (should-not (vc-p4--operation-error vc-p4-last-operation)))))
 
 (ert-deftest vc-p4-input-expired-state-save-and-refresh ()
   (vc-p4-test-faults

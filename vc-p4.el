@@ -30,7 +30,7 @@
   :type 'natnum)
 (cl-defstruct (vc-p4--job (:constructor vc-p4--make-job))
   directory command environment exec-path callback timeout
-  process stderr-process output errors timer result done)
+  process stderr-process output errors timer result done prepare)
 (defvar vc-p4--queue nil)
 (defvar vc-p4--active nil)
 (defvar vc-p4--dispatch-timer nil)
@@ -91,7 +91,10 @@ Release all resources before delivering the result to its callback."
   "Start JOB with the environment captured at submission."
   (push job vc-p4--active)
   (condition-case err
-      (let ((default-directory (vc-p4--job-directory job))
+      (progn
+        (when (vc-p4--job-prepare job)
+          (funcall (vc-p4--job-prepare job)))
+        (let ((default-directory (vc-p4--job-directory job))
             (process-environment (vc-p4--job-environment job))
             (exec-path (vc-p4--job-exec-path job)))
         (setf (vc-p4--job-output job) (generate-new-buffer " *vc-p4-async-output*")
@@ -119,7 +122,7 @@ Release all resources before delivering the result to its callback."
                 (run-at-time (vc-p4--job-timeout job) nil
                              #'vc-p4--finish job 'timeout
                              "P4 timed out; check connection/login"))
-          (vc-p4--completed job)))
+          (vc-p4--completed job))))
     (error (vc-p4--finish job 'error (error-message-string err)))))
 
 (defun vc-p4--dispatch ()
@@ -253,6 +256,7 @@ P4CONFIG candidate, so creating a nearer configuration invalidates caches."
 (defvar-local vc-p4--notice-context nil)
 (defvar-local vc-p4--notice-timer nil)
 (defvar-local vc-p4-status nil "Background status: pending, error, or nil.")
+(defvar-local vc-p4--operation-error nil)
 (defvar vc-p4-update-hook nil "Hook run after background data changes in a file buffer.")
 
 (defun vc-p4--notify (file context)
@@ -864,12 +868,16 @@ cached baselines and may run local diff; automatic gutters always use ASYNC."
 
 (defun vc-p4-mode-line-string (file)
   "Show pending or failed retrieval explicitly for FILE."
-  (if vc-p4-status
-      (propertize (if (eq vc-p4-status 'error) "P4!" "P4?")
-                  'help-echo (if (eq vc-p4-status 'error)
-                                 (or vc-p4-last-error "P4 retrieval failed")
-                               "P4 metadata or baseline pending"))
-    (vc-default-mode-line-string 'P4 file)))
+  (let ((status (cond ((vc-p4--operation-for file) 'pending)
+                      (vc-p4--operation-error 'error)
+                      (t vc-p4-status))))
+    (if status
+        (propertize (if (eq status 'error) "P4!" "P4?")
+                    'help-echo (if (eq status 'error)
+                                   (or vc-p4--operation-error vc-p4-last-error
+                                       "P4 retrieval failed")
+                                 "P4 operation or retrieval pending"))
+      (vc-default-mode-line-string 'P4 file))))
 
 (defun vc-p4-refresh ()
   "Invalidate P4 caches and schedule new discovery without waiting."
@@ -895,8 +903,129 @@ cached baselines and may run local diff; automatic gutters always use ASYNC."
         (setq vc-p4-status 'pending vc-mode " P4?")
         (vc-p4--notify buffer-file-name (vc-p4--context buffer-file-name)))))))
 
+;; VC's mutation frontends assume synchronous completion.  These narrow P4
+;; adapters defer their buffer-side effects until the command has succeeded.
+(cl-defstruct (vc-p4--operation (:constructor vc-p4--make-operation))
+  name files contexts job result error success)
+(defvar vc-p4--operations (make-hash-table :test #'equal))
+(defvar vc-p4-last-operation nil "Most recently started P4 mutation, for diagnostics.")
+
+(defun vc-p4--operation-for (file)
+  "Return the pending mutation of local FILE, if any."
+  (when (and file (not (file-remote-p file)))
+    (gethash (file-truename file) vc-p4--operations)))
+
+(defun vc-p4--invalidate-file (file &optional keep-properties)
+  "Invalidate FILE's metadata and cancel obsolete reads, preserving other files."
+  (vc-p4--cancel-file-work file)
+  (let (keys)
+    (maphash (lambda (key _)
+               (when (equal (file-truename (nth 1 key)) (file-truename file))
+                 (push key keys))) vc-p4--metadata)
+    (dolist (key keys) (remhash key vc-p4--metadata)))
+  (unless keep-properties (vc-file-clearprops file)))
+
+(defun vc-p4--operation-finish (operation result)
+  "Publish RESULT for OPERATION, refreshing even after a partial failure."
+  (setf (vc-p4--operation-result operation) result)
+  (condition-case err
+      (if (eq (plist-get result :status) 'success)
+          (let ((records (vc-p4--parse-json (plist-get result :stdout))))
+            (unless (cl-some (lambda (record) (alist-get 'action record)) records)
+              (signal 'vc-p4-error
+                      (list (or (cl-some (lambda (record) (alist-get 'data record)) records)
+                                "No file action confirmed"))))
+            (when (vc-p4--operation-success operation)
+              (funcall (vc-p4--operation-success operation))))
+        (signal 'vc-p4-error
+                (list (format "%s: %s%s%s" (plist-get result :status)
+                              (or (plist-get result :detail) "")
+                              (plist-get result :stderr) (plist-get result :stdout)))))
+    (error (setf (vc-p4--operation-error operation) (error-message-string err))
+           (setq vc-p4-last-error (error-message-string err))))
+  (cl-mapc
+   (lambda (file context)
+     (remhash (file-truename file) vc-p4--operations)
+     (vc-p4--invalidate-file
+      file (or (not (equal context (vc-p4--context file)))
+               (not (memq (vc-file-getprop file 'vc-backend) '(nil none P4)))))
+     (when (equal context (vc-p4--context file))
+       (when-let* ((buffer (get-file-buffer file)))
+         (with-current-buffer buffer
+           (setq vc-p4--operation-error (vc-p4--operation-error operation))
+           (vc-file-setprop file 'vc-backend 'P4)))
+       (vc-p4--notify file context)))
+   (vc-p4--operation-files operation) (vc-p4--operation-contexts operation))
+  (message "P4 %s: %s" (vc-p4--operation-name operation)
+           (or (vc-p4--operation-error operation) "done")))
+
+(defun vc-p4--operate (name files args &optional success)
+  "Queue mutation NAME of FILES with ARGS and a SUCCESS completion function.
+Serialize overlapping files, capture configuration and never retry a mutation."
+  (setq files (mapcar #'expand-file-name files))
+  (dolist (file files)
+    (when (or (file-remote-p file) (file-directory-p file))
+      (user-error "P4 operations require individual local files"))
+    (when (vc-p4--operation-for file)
+      (user-error "A P4 operation is already pending for %s" file)))
+  (let ((operation (vc-p4--make-operation
+                    :name name :files files :contexts (mapcar #'vc-p4--context files)
+                    :success success)))
+    (setq vc-p4-last-operation operation)
+    (dolist (file files)
+      (puthash (file-truename file) operation vc-p4--operations)
+      (when-let* ((buffer (get-file-buffer file)))
+        (with-current-buffer buffer
+          (setq vc-p4--operation-error nil vc-mode " P4?"))))
+    (setf (vc-p4--operation-job operation)
+          (apply #'vc-p4--run-async (file-name-directory (car files))
+                 (lambda (result) (vc-p4--operation-finish operation result))
+                 "-Mj" "-ztag" args))
+    (setf (vc-p4--job-prepare (vc-p4--operation-job operation))
+          (lambda ()
+            (unless (equal (vc-p4--operation-contexts operation)
+                           (mapcar #'vc-p4--context files))
+              (user-error "P4 configuration changed before operation started"))))
+    operation))
+
+(defun vc-p4-cancel-operation ()
+  "Cancel this file's pending P4 operation and refresh its actual state.
+A running command may already have changed the workspace or server."
+  (interactive)
+  (if-let* ((operation (vc-p4--operation-for buffer-file-name)))
+      (vc-p4--cancel (vc-p4--operation-job operation))
+    (user-error "No P4 operation is pending for this file")))
+
+(defun vc-p4-checkout (file &optional revision)
+  "Open FILE for edit asynchronously, preserving its HAVE revision and text.
+Changing to REVISION is a sync operation and is not implemented here."
+  (when revision (user-error "Use p4 sync to change revisions"))
+  (let ((file (expand-file-name file))
+        (context (vc-p4--context file)))
+    (vc-p4--operate
+     "edit" (list file) (list "edit" (vc-p4--escape file))
+     (lambda ()
+       (when (equal context (vc-p4--context file))
+         (when-let* ((buffer (get-file-buffer file)))
+           (with-current-buffer buffer
+             ;; edit changes permissions, never buffer contents or undo history.
+             (read-only-mode (if (file-writable-p file) -1 1))
+             (run-hooks 'vc-checkout-hook))))))))
+
+(defun vc-p4--vc-checkout (original file &optional revision)
+  "Route P4 checkout through completion handling; delegate ORIGINAL otherwise."
+  (if (eq (vc-backend file) 'P4)
+      (vc-p4-checkout file revision)
+    (funcall original file revision)))
+
+(defun vc-p4-edit ()
+  "Open the current file for edit, including in an allwrite workspace."
+  (interactive)
+  (vc-checkout (or buffer-file-name (user-error "This buffer visits no file"))))
+
+(advice-add 'vc-checkout :around #'vc-p4--vc-checkout)
+
 ;; Deliberately fail unsupported mutations rather than invoking generic fallbacks.
-(defun vc-p4-checkout (&rest _args) "Checkout is not implemented yet." (user-error "Use p4 edit; VC checkout is not implemented yet"))
 (defun vc-p4-checkin (&rest _args) "Submit is not implemented yet." (user-error "P4 submit is not implemented yet"))
 (defun vc-p4-register (&rest _args) "Add is not implemented yet." (user-error "P4 add is not implemented yet"))
 (defun vc-p4-revert (&rest _args) "Revert is not implemented yet." (user-error "P4 revert is not implemented yet"))
