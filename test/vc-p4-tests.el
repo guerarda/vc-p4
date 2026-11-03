@@ -20,7 +20,7 @@
   (should (eq 'file (vc-call-backend 'P4 'revision-granularity))))
 
 (ert-deftest vc-p4-mutations-fail-explicitly ()
-  (dolist (operation '(checkin revert))
+  (dolist (operation '(checkin))
     (should-error (vc-call-backend 'P4 operation "unused") :type 'user-error)))
 
 (ert-deftest vc-p4-path-escaping-is-literal ()

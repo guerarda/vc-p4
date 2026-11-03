@@ -128,3 +128,70 @@
   (should (equal (vc-p4--vc-register #'list '(Git ("file")) "comment")
                  '((Git ("file")) "comment")))
   (should-error (vc-p4-register (list temporary-file-directory)) :type 'user-error))
+
+(ert-deftest vc-p4-revert-defers-reload-and-protects-newer-unsaved-text ()
+  (vc-p4-test-operation
+    (cl-letf (((symbol-function 'vc-p4--stat) (lambda (_) '((action . "edit")))))
+      (let ((operation (vc-revert-file file)))
+        (funcall (vc-p4--job-prepare job))
+        (should (equal (buffer-string) "original\n"))
+        (insert "new typing ")
+        (should-error (save-buffer) :type 'user-error)
+        (should (equal (vc-p4--local-bytes file) "original\n"))
+        ;; Model the server replacing disk contents while input keeps running.
+        (with-temp-file file (insert "reverted\n"))
+        (vc-p4-test-complete-operation job)
+        (should (equal (buffer-string) "new typing original\n"))
+        (should (buffer-modified-p))
+        (should-not (vc-p4--operation-for file))
+        (should-not (vc-p4--operation-recovery operation))))))
+
+(ert-deftest vc-p4-destructive-failure-retains-recoverable-bytes ()
+  (dolist (status '(error timeout cancelled))
+    (vc-p4-test-operation
+      (cl-letf (((symbol-function 'vc-p4--stat) (lambda (_) '((action . "edit")))))
+        (let ((operation (vc-revert-file file)))
+          (funcall (vc-p4--job-prepare job))
+          (let ((recovery (vc-p4--operation-recovery operation)))
+            (unwind-protect
+                (progn
+                  (with-temp-file file (insert "partially changed\n"))
+                  (vc-p4-test-complete-operation job (list :status status :stderr "failure"))
+                  (should (equal (vc-p4--local-bytes (expand-file-name "1" recovery)) "original\n"))
+                  (should (file-exists-p (expand-file-name "files.el" recovery)))
+                  (should (equal (buffer-string) "original\n"))
+                  (should (vc-p4--operation-error operation))
+                  (should-not (vc-p4--operation-for file)))
+              (delete-directory recovery t))))))))
+
+(ert-deftest vc-p4-destructive-operation-rechecks-queued-files ()
+  (vc-p4-test-operation
+    (cl-letf (((symbol-function 'vc-p4--stat) (lambda (_) '((action . "edit")))))
+      (vc-revert-file file)
+      (with-temp-file file (insert "external change\n"))
+      (should-error (funcall (vc-p4--job-prepare job)) :type 'user-error)
+      (should-not (vc-p4--operation-recovery vc-p4-last-operation))
+      (vc-p4-cancel-operation))))
+
+(ert-deftest vc-p4-delete-native-front-end-never-deletes-on-failure ()
+  (vc-p4-test-operation
+    (cl-letf (((symbol-function 'vc-p4--stat) (lambda (_) '((haveRev . "1"))))
+              ((symbol-function 'vc-p4-state) (lambda (_) 'up-to-date))
+              ((symbol-function 'y-or-n-p) (lambda (&rest _) t)))
+      (vc-delete-file file)
+      (should (file-exists-p file))
+      (vc-p4-test-complete-operation job '(:status error :stderr "denied"))
+      (should (file-exists-p file))
+      (should (buffer-live-p (current-buffer)))
+      (should (equal (buffer-string) "original\n")))))
+
+(ert-deftest vc-p4-revert-confirmation-and-other-backend-delegation ()
+  (vc-p4-test-operation
+    (cl-letf (((symbol-function 'vc-deduce-fileset) (lambda (&rest _) (list 'P4 (list file))))
+              ((symbol-function 'vc-p4--stat) (lambda (_) '((action . "edit"))))
+              ((symbol-function 'yes-or-no-p) (lambda (&rest _) nil)))
+      (should-error (vc-revert) :type 'user-error)
+      (should-not job))
+    (vc-file-setprop file 'vc-backend 'Git)
+    (should (equal (vc-p4--vc-revert-file #'list file) (list file)))
+    (should (equal (vc-p4--vc-delete-file #'list file) (list file)))))

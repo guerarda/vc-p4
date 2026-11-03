@@ -76,6 +76,25 @@
       (should (buffer-modified-p))
       (should-not (vc-p4--operation-error vc-p4-last-operation)))))
 
+(ert-deftest vc-p4-input-during-running-revert-preserves-typing ()
+  (vc-p4-test-faults
+    (setenv "VC_P4_FAULT_ACTION" "edit")
+    (save-window-excursion
+      (find-file file)
+      (vc-p4-test-await (lambda () (eq (vc-file-getprop file 'vc-state) 'up-to-date)))
+      (setenv "VC_P4_FAULT_DELAY" "0.6")
+      (let* ((operation (vc-revert-file file))
+             (job (vc-p4--operation-job operation)))
+        (vc-p4-test-await (lambda () (vc-p4--job-process job)))
+        (vc-p4-test-queued-input #'ignore)
+        (should (process-live-p (vc-p4--job-process job)))
+        (should-error (save-buffer) :type 'user-error)
+        (vc-p4-test-await (lambda () (not (vc-p4--operation-for file))))
+        (should-not (vc-p4--operation-error operation))
+        (should (string-match-p "typed" (buffer-string)))
+        (should (buffer-modified-p))
+        (should-not (vc-p4--operation-recovery operation))))))
+
 (ert-deftest vc-p4-input-expired-state-save-and-refresh ()
   (vc-p4-test-faults
     (save-window-excursion

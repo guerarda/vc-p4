@@ -82,6 +82,8 @@ def run_fixture(args):
                     "exclusive.txt": b"exclusive\n",
                     "ops-edit.txt": b"edit lifecycle\n",
                     "ops-lock.txt": b"exclusive lifecycle\n",
+                    "ops-revert.txt": b"revert lifecycle\n",
+                    "ops-delete.txt": b"delete lifecycle\n",
                     "conflict.txt": b"original\n",
                     "stale.txt": b"original\n",
                     "café.txt": b"unicode path\n",
