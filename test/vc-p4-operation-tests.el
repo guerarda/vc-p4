@@ -195,3 +195,17 @@
     (vc-file-setprop file 'vc-backend 'Git)
     (should (equal (vc-p4--vc-revert-file #'list file) (list file)))
     (should (equal (vc-p4--vc-delete-file #'list file) (list file)))))
+
+(ert-deftest vc-p4-operation-cleanup-failure-still-releases-file ()
+  (vc-p4-test-operation
+    (let ((operation (vc-p4--operate "test" (list file) '("revert" "file") nil t)))
+      (funcall (vc-p4--job-prepare job))
+      (let ((recovery (vc-p4--operation-recovery operation)))
+        (unwind-protect
+            (progn
+              (cl-letf (((symbol-function 'delete-directory) (lambda (&rest _) (error "Cleanup denied"))))
+                (vc-p4-test-complete-operation job))
+              (should-not (vc-p4--operation-for file))
+              (should (vc-p4--operation-error operation))
+              (should (file-directory-p recovery)))
+          (delete-directory recovery t))))))

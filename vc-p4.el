@@ -981,39 +981,58 @@ cached baselines and may run local diff; automatic gutters always use ASYNC."
 
 (advice-add 'basic-save-buffer :before #'vc-p4--check-operation-save)
 
+(defun vc-p4--check-operation-result (result)
+  "Require a confirmed file action in RESULT, preserving server diagnostics."
+  (unless (eq (plist-get result :status) 'success)
+    (signal 'vc-p4-error
+            (list (format "%s: %s%s%s" (plist-get result :status)
+                          (or (plist-get result :detail) "")
+                          (or (plist-get result :stderr) "")
+                          (or (plist-get result :stdout) "")))))
+  (let ((records (vc-p4--parse-json (plist-get result :stdout))))
+    (unless (cl-some (lambda (record) (alist-get 'action record)) records)
+      (signal 'vc-p4-error
+              (list (or (cl-some (lambda (record) (alist-get 'data record)) records)
+                        "No file action confirmed"))))))
+
+(defun vc-p4--operation-note-error (operation error)
+  "Record ERROR on OPERATION without masking an earlier failure."
+  (unless (vc-p4--operation-error operation)
+    (setf (vc-p4--operation-error operation) (error-message-string error)))
+  (setq vc-p4-last-error (vc-p4--operation-error operation)))
+
 (defun vc-p4--operation-finish (operation result)
-  "Publish RESULT for OPERATION, refreshing even after a partial failure."
+  "Publish RESULT for OPERATION and release files even if UI or cleanup fails."
   (setf (vc-p4--operation-result operation) result)
-  (condition-case err
-      (if (eq (plist-get result :status) 'success)
-          (let ((records (vc-p4--parse-json (plist-get result :stdout))))
-            (unless (cl-some (lambda (record) (alist-get 'action record)) records)
-              (signal 'vc-p4-error
-                      (list (or (cl-some (lambda (record) (alist-get 'data record)) records)
-                                "No file action confirmed"))))
+  (unwind-protect
+      (condition-case err
+          (progn
+            (vc-p4--check-operation-result result)
             (when (vc-p4--operation-success operation)
               (funcall (vc-p4--operation-success operation) operation)))
-        (signal 'vc-p4-error
-                (list (format "%s: %s%s%s" (plist-get result :status)
-                              (or (plist-get result :detail) "")
-                              (plist-get result :stderr) (plist-get result :stdout)))))
-    (error (setf (vc-p4--operation-error operation) (error-message-string err))
-           (setq vc-p4-last-error (error-message-string err))))
+        ((error quit) (vc-p4--operation-note-error operation err)))
+    (dolist (file (vc-p4--operation-files operation))
+      (remhash (file-truename file) vc-p4--operations)))
   (when (and (vc-p4--operation-recovery operation)
              (not (vc-p4--operation-error operation)))
-    (delete-directory (vc-p4--operation-recovery operation) t)
-    (setf (vc-p4--operation-recovery operation) nil))
+    (condition-case err
+        (progn
+          (delete-directory (vc-p4--operation-recovery operation) t)
+          (setf (vc-p4--operation-recovery operation) nil))
+      (error (vc-p4--operation-note-error operation err))))
   (cl-mapc
    (lambda (file context)
-     (remhash (file-truename file) vc-p4--operations)
-     (vc-p4--invalidate-file
-      file (or (not (equal context (vc-p4--context file)))
-               (not (memq (vc-file-getprop file 'vc-backend) '(nil none P4)))))
-     (when (equal context (vc-p4--context file))
-       (when-let* ((buffer (get-file-buffer file)))
-         (with-current-buffer buffer
-           (setq vc-p4--operation-error (vc-p4--operation-error operation))))
-       (vc-p4--notify file context)))
+     (condition-case err
+         (progn
+           (vc-p4--invalidate-file
+            file (or (not (equal context (vc-p4--context file)))
+                     (not (memq (vc-file-getprop file 'vc-backend) '(nil none P4)))))
+           (when (equal context (vc-p4--context file))
+             (when-let* ((buffer (get-file-buffer file)))
+               (with-current-buffer buffer
+                 (setq vc-p4--operation-error (vc-p4--operation-error operation))))
+             (vc-p4--notify file context)))
+       (error (vc-p4--operation-note-error operation err))))
    (vc-p4--operation-files operation) (vc-p4--operation-contexts operation))
   (message "P4 %s: %s%s" (vc-p4--operation-name operation)
            (or (vc-p4--operation-error operation) "done")
