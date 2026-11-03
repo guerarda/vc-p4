@@ -8,6 +8,54 @@
 ;;; Code:
 (require 'vc-p4)
 
+(defvar-local vc-p4--waiting-command nil)
+
+(defun vc-p4--continue-command (files function)
+  "Run FUNCTION, continuing automatically when FILES' metadata arrives.
+Never replay a mutation: FUNCTION must signal pending only before starting it.
+Abort if the initiating buffer, configuration, disk or buffer text changes."
+  (when vc-p4--waiting-command (user-error "A P4 command is already waiting"))
+  (let* ((buffer (current-buffer))
+         (contexts (mapcar #'vc-p4--context files))
+         (stamps (mapcar #'vc-p4--file-stamp files))
+         (tick (buffer-chars-modified-tick))
+         (deadline (+ (float-time) (* 4 vc-p4-command-timeout)))
+         timer)
+    (cl-labels
+        ((cancel ()
+           (when timer (cancel-timer timer))
+           (when (buffer-live-p buffer)
+             (with-current-buffer buffer (setq vc-p4--waiting-command nil))))
+         (step ()
+           (when (buffer-live-p buffer)
+             (with-current-buffer buffer
+               (condition-case err
+                   (progn
+                     (unless (and (< (float-time) deadline)
+                                  (= tick (buffer-chars-modified-tick))
+                                  (equal contexts (mapcar #'vc-p4--context files))
+                                  (equal stamps (mapcar #'vc-p4--file-stamp files)))
+                       (user-error "P4 command cancelled: file/context changed or metadata timed out"))
+                     (let ((vc-p4-metadata-ttl most-positive-fixnum))
+                       (funcall function))
+                     (cancel))
+                 (vc-p4-pending (setq timer (run-at-time 0.05 nil #'step)))
+                 (error (cancel)
+                        (setq vc-p4--operation-error (error-message-string err)
+                              vc-p4-last-error vc-p4--operation-error vc-mode " P4!")
+                        (message "%s" vc-p4-last-error)))))))
+      (condition-case nil
+          (funcall function)
+        (vc-p4-pending
+         (setq vc-p4--waiting-command #'cancel vc-mode " P4?")
+         (add-hook 'kill-buffer-hook #'vc-p4--cancel-waiting-command nil t)
+         (setq timer (run-at-time 0.05 nil #'step))
+         (message "P4: waiting for metadata; command will continue automatically"))))))
+
+(defun vc-p4--cancel-waiting-command ()
+  "Cancel metadata acquisition for the current buffer's requested command."
+  (when vc-p4--waiting-command (funcall vc-p4--waiting-command)))
+
 ;; VC's mutation frontends assume synchronous completion.  These narrow P4
 ;; adapters defer their buffer-side effects until the command has succeeded.
 (cl-defstruct (vc-p4--operation (:constructor vc-p4--make-operation))
@@ -239,9 +287,10 @@ at dispatch.  ARGS may be a list of commands to run in order.  Never retry."
   "Cancel this file's pending P4 operation and refresh its actual state.
 A running command may already have changed the workspace or server."
   (interactive)
-  (if-let* ((operation (vc-p4--operation-for buffer-file-name)))
+  (if vc-p4--waiting-command (vc-p4--cancel-waiting-command)
+    (if-let* ((operation (vc-p4--operation-for buffer-file-name)))
       (vc-p4--cancel (vc-p4--operation-job operation))
-    (user-error "No P4 operation is pending for this file")))
+      (user-error "No P4 operation is pending for this file"))))
 
 (defun vc-p4-checkout (file &optional revision)
   "Open FILE for edit asynchronously, preserving its HAVE revision and text.
@@ -284,6 +333,22 @@ Changing to REVISION is a sync operation and is not implemented here."
 
 (defun vc-p4--vc-register (original &optional fileset comment)
   "Register P4 FILESET asynchronously, delegating ORIGINAL for other backends."
+  (if (and (null fileset) buffer-file-name (memq 'P4 vc-handled-backends)
+           (not (vc-find-root buffer-file-name ".git")))
+      (let ((file buffer-file-name))
+        (vc-buffer-sync)
+        ;; A cached/inferred Git backend is not evidence of a Git repository.
+        ;; Resolve the P4 mapping before allowing generic backend selection.
+        (vc-p4--continue-command
+         (list file)
+         (lambda ()
+           (let ((vc-p4-status nil))
+             (cond ((vc-p4-root file)
+                    (vc-p4--vc-register original (list 'P4 (list file)) comment))
+                   ((eq vc-p4-status 'pending) (signal 'vc-p4-pending nil))
+                   ((eq vc-p4-status 'error)
+                    (signal 'vc-p4-error (list vc-p4-last-error)))
+                   (t (funcall original nil comment)))))))
   (let ((fileset (or fileset (vc-deduce-fileset nil t))))
     (if (not (eq (car fileset) 'P4))
         (funcall original fileset comment)
@@ -292,7 +357,22 @@ Changing to REVISION is a sync operation and is not implemented here."
           (user-error "This file is already registered: %s" file))
         (when-let* ((buffer (get-file-buffer file)))
           (with-current-buffer buffer (vc-buffer-sync))))
-      (vc-p4-register (cadr fileset) comment))))
+      (dolist (file (cadr fileset)) (vc-file-setprop file 'vc-backend 'none))
+      (vc-p4-register (cadr fileset) comment)))))
+
+(defun vc-p4--vc-next-action (original verbose)
+  "Open an unopened P4 file for edit before offering a check-in workflow."
+  (if (not (and buffer-file-name (eq (vc-backend buffer-file-name) 'P4)))
+      (funcall original verbose)
+    (when verbose (user-error "Use p4 sync to change revisions"))
+    (let ((file buffer-file-name))
+      (vc-p4--continue-command
+       (list file)
+       (lambda ()
+         (let ((action (alist-get 'action (vc-p4--require-stat file))))
+           (if (or (null action) (equal action "edit"))
+               (vc-p4-checkout file)
+             (user-error "P4 file is open for %s; submit through the P4 CLI" action))))))))
 
 (defun vc-p4--vc-backend-for-registration (original file)
   "Avoid repository creation while P4 discovery for FILE is pending or failed.
@@ -349,11 +429,11 @@ Delegate ORIGINAL when a responsible backend is already known."
     (if (not (eq (car fileset) 'P4)) (funcall original)
       (let ((files (cadr fileset)))
         (vc-p4--check-saved files)
-        ;; Validate the whole selection before starting any mutation.
-        (mapc #'vc-p4--require-stat files)
         (unless (yes-or-no-p (format "Discard saved changes in %s? " (vc-delistify files)))
           (user-error "Revert canceled"))
-        (mapcar #'vc-p4-revert files)))))
+        (unless (= (length files) 1)
+          (user-error "Revert one P4 file at a time"))
+        (vc-p4--continue-command files (lambda () (vc-p4-revert (car files))))))))
 
 (defun vc-p4-delete-file (file)
   "Open FILE for deletion asynchronously, keeping a recovery copy on failure."

@@ -88,6 +88,7 @@
             (vc-p4-integration-drain)
             (goto-char (point-max)) (insert "discard this\n") (save-buffer)
             (vc-p4-integration-ready file)
+            (maphash (lambda (_ entry) (setf (vc-p4--entry-time entry) 0)) vc-p4--metadata)
             (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
               (vc-revert))
             (should (string-match-p "discard" (buffer-string)))
@@ -140,11 +141,10 @@
         (progn
           (with-current-buffer (find-file-noselect file)
             (insert "new contents\n")
+            (vc-file-setprop file 'vc-backend 'Git)
             (cl-letf (((symbol-function 'completing-read)
                        (lambda (&rest _) (ert-fail "Cold P4 discovery offered repository creation"))))
-              (should-error (vc-register) :type 'vc-p4-pending))
-            (vc-p4-integration-ready file)
-            (vc-register)
+              (vc-register))
             (vc-p4-integration-drain)
             (should-not (vc-p4--operation-error vc-p4-last-operation))
             (should (eq (vc-backend file) 'P4))
@@ -204,7 +204,9 @@
                 (or vc-p4--queue vc-p4--active vc-p4--diff-tasks
                     vc-p4--dispatch-timer
                     (cl-some (lambda (buffer)
-                               (buffer-local-value 'vc-p4--notice-timer buffer))
+                               (or (buffer-local-value 'vc-p4--notice-timer buffer)
+                                   (and (boundp 'vc-p4--waiting-command)
+                                        (buffer-local-value 'vc-p4--waiting-command buffer))))
                              (buffer-list))))
       (accept-process-output nil 0.01))
     (should-not vc-p4--queue)

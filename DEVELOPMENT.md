@@ -9,7 +9,7 @@ Validate other environments using the workspace smoke check.
 ## Checks
 
 - Warning-free byte compilation.
-- 74 backend/process/operation tests; 98 total including three real diff-hl
+- 79 backend/process/operation tests; 103 total including three real diff-hl
   consumer tests, nine incremental-rendering tests and twelve fault/input tests.
 - 24 disposable-server tests covering actual metadata, byte retrieval, state,
   mappings, native file operations and nine gutter scenarios. Run against both
@@ -135,3 +135,9 @@ Use `git log --reverse --oneline` to follow the implementation and
 
 See [VALIDATION.md](VALIDATION.md) for workspace installation, smoke checks
 and rollback.
+
+Metadata-dependent checkout, registration and interactive revert use one guarded
+continuation. It waits only for preflight data, never retries a mutation, and
+cancels on changed text, disk identity, configuration or buffer closure. Tests
+cover inferred Git metadata versus real Git roots and automatic cold-cache
+registration/revert through native commands.

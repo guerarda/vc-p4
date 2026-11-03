@@ -925,6 +925,7 @@ cached baselines and may run local diff; automatic gutters always use ASYNC."
 (autoload 'vc-p4-delete-file "vc-p4-ops")
 (autoload 'vc-p4-rename-file "vc-p4-ops")
 (autoload 'vc-p4--vc-checkout "vc-p4-ops")
+(autoload 'vc-p4--vc-next-action "vc-p4-ops")
 (autoload 'vc-p4--vc-register "vc-p4-ops")
 (autoload 'vc-p4--vc-backend-for-registration "vc-p4-ops")
 (autoload 'vc-p4--vc-revert-file "vc-p4-ops")
@@ -937,6 +938,7 @@ cached baselines and may run local diff; automatic gutters always use ASYNC."
 
 (advice-add 'basic-save-buffer :before #'vc-p4--check-operation-save)
 (advice-add 'vc-checkout :around #'vc-p4--vc-checkout)
+(advice-add 'vc-next-action :around #'vc-p4--vc-next-action)
 (advice-add 'vc-register :around #'vc-p4--vc-register)
 (advice-add 'vc-backend-for-registration :around #'vc-p4--vc-backend-for-registration)
 (advice-add 'vc-revert-file :around #'vc-p4--vc-revert-file)

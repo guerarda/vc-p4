@@ -58,12 +58,13 @@ alongside VC state; nothing in this check submits a changelist.
 1. Run the checkout/save/revert steps above. Type in another buffer while each
    command is pending. In an allwrite workspace, also try `M-x vc-p4-edit`.
 2. Create a disposable file, insert text, and use `C-x v i`. If discovery is
-   pending, retry after it completes; it should not offer to create a repository.
+   pending, the command should continue automatically without another keypress;
+   it should not offer to create a repository.
    Verify an `add` action with `p4 opened`. Revert it using `C-x v u`: the file
    and its contents should remain, and its pending add should disappear.
 3. Move the disposable tracked file using `M-x vc-rename-file` to a new unused
    name in the same workspace. The buffer name should follow only after success.
-   Use `C-x v u` on the moved-to file; retry if its move-partner mapping is still
+   Use `C-x v u` on the moved-to file; it should continue automatically if its move-partner mapping is still
    being retrieved. Expect the original name and contents to return.
 4. Delete the clean tracked test file with `M-x vc-delete-file`. Expect a pending
    delete and a retained read-only visiting buffer. Use `C-x v u` there to restore

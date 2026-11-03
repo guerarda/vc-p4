@@ -77,7 +77,7 @@ retrieval. They remain asynchronous even if another package disables
 
 Open a versioned file in your Perforce workspace. If highlighting is not
 already enabled for the buffer, run `M-x diff-hl-mode`. In a workspace that
-requires checkout, use `C-x v v` on a clean file before editing it. The buffer
+requires checkout, use `C-x v v` to open the file for edit. The buffer
 becomes writable after P4 confirms the checkout. `M-x vc-p4-edit` explicitly
 opens the current file for edit, including in an allwrite workspace.
 
@@ -86,15 +86,18 @@ Use `M-x diff-hl-next-hunk` and `M-x diff-hl-previous-hunk` to navigate changes.
 
 | Operation | Command |
 | --- | --- |
-| Open for edit | `C-x v v` on a clean file, or `M-x vc-p4-edit` |
+| Open for edit | `C-x v v`, or `M-x vc-p4-edit` |
 | Add a new file | `C-x v i` (`vc-register`) |
 | Revert saved changes | `C-x v u` (`vc-revert`), with confirmation |
 | Delete a tracked file | `M-x vc-delete-file`, with confirmation |
 | Move a tracked or added file | `M-x vc-rename-file` |
 | Cancel this file's operation | `M-x vc-p4-cancel-operation` |
 
-Commands return while P4 runs. If discovery or a required baseline is still
-pending, retry the command when it is ready. Revert, delete and move require
+Commands return while P4 runs. Checkout, registration and interactive revert
+continue automatically when required metadata arrives. Editing the initiating
+buffer or changing its workspace while waiting cancels the queued command.
+Delete and move may still require retrying when their metadata is pending.
+`C-x v v` opens P4 files for edit; it does not open a submit-comment window. Revert, delete and move require
 saved buffers; delete also requires no local content changes. Saves of affected
 files are blocked while these operations run, but typing and navigation remain
 available. Completion preserves any newer buffer edits. Moving a file updates
