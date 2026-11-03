@@ -29,7 +29,8 @@
           (buffer nil))
      (unwind-protect
          (progn
-           (vc-p4--run dir "edit" (vc-p4--escape file))
+           (vc-p4-checkout file)
+           (vc-p4-integration-drain)
            (vc-p4-integration-ready file)
            (setq buffer (find-file-noselect file))
            (with-current-buffer buffer
@@ -58,6 +59,23 @@
     (progn (vc-p4-refresh) (vc-p4-integration-drain))
     (vc-p4-gutter-update)
     (should-not (vc-p4-gutter-hunks))))
+
+(ert-deftest vc-p4-real-gutter-native-revert-converges-without-full-refresh ()
+  (vc-p4-gutter-with-file
+    (goto-char (point-min)) (forward-line 1)
+    (delete-region (point) (line-end-position)) (insert "native revert")
+    (save-buffer) (vc-p4-gutter-update)
+    (should (equal (vc-p4-gutter-hunks) '((2 change))))
+    (let ((other-key (list (vc-p4--context file) (concat file "-unrelated") '("info")))
+          (other-entry (vc-p4--make-entry :value 'unchanged :time (float-time))))
+      (puthash other-key other-entry vc-p4--metadata)
+      (vc-revert-file file)
+      (should (equal (vc-p4-gutter-hunks) '((2 change))))
+      (vc-p4-integration-drain)
+      (should-not (vc-p4--operation-error vc-p4-last-operation))
+      (should (eq (gethash other-key vc-p4--metadata) other-entry))
+      (should (equal (buffer-string) "one\ntwo\nthree\n"))
+      (should-not (vc-p4-gutter-hunks)))))
 
 (ert-deftest vc-p4-real-gutter-insertion-and-deletion ()
   (vc-p4-gutter-with-file

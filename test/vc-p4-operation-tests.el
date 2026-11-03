@@ -292,3 +292,83 @@
   (vc-p4-test-operation
     (vc-file-setprop file 'vc-backend 'Git)
     (should (equal (vc-p4--vc-rename-file #'list file "new") (list file "new")))))
+
+(ert-deftest vc-p4-register-cold-discovery-never-offers-repository-creation ()
+  (vc-p4-test-operation
+   (vc-file-setprop file 'vc-backend 'none)
+   (let ((vc-handled-backends '(P4)))
+     (dolist (status '(pending error))
+       (cl-letf (((symbol-function 'vc-p4-registered) (lambda (_) nil))
+                 ((symbol-function 'vc-p4-responsible-p)
+                  (lambda (_) (setq vc-p4-status status) nil))
+                 ((symbol-function 'completing-read)
+                  (lambda (&rest _) (ert-fail "Offered repository creation while discovery pending"))))
+         (should-error (vc-register) :type (if (eq status 'pending) 'vc-p4-pending 'vc-p4-error))
+         (should-not job))))
+   (cl-letf (((symbol-function 'vc-responsible-backend)
+              (lambda (&rest _) (setq vc-p4-status 'pending) 'Git)))
+     (should (equal (vc-p4--vc-backend-for-registration #'identity file) file)))))
+
+(ert-deftest vc-p4-failed-add-remains-visible-after-background-publication ()
+  (vc-p4-test-operation
+   (vc-p4-register (list file))
+   (vc-p4-test-complete-operation job '(:status error :stderr "denied"))
+   (cl-letf (((symbol-function 'vc-p4-registered) (lambda (_) nil)))
+     (vc-p4--publish (current-buffer) file (vc-p4--context file)))
+   (should (equal vc-mode " P4!"))
+   (vc-p4-refresh)
+   (should-not vc-p4--operation-error)))
+
+(ert-deftest vc-p4-checkout-ignores-a-buffer-switched-to-another-backend ()
+  (vc-p4-test-operation
+   (setq buffer-read-only t)
+   (vc-checkout file)
+   (vc-file-setprop file 'vc-backend 'Git)
+   (vc-p4-test-complete-operation job)
+   (should buffer-read-only)
+   (should (eq (vc-file-getprop file 'vc-backend) 'Git))))
+
+(ert-deftest vc-p4-operation-completion-uses-owning-buffer-environment ()
+  (vc-p4-test-operation
+   (setq-local process-environment (copy-sequence process-environment))
+   (setenv "P4CLIENT" "buffer-client")
+   (setq buffer-read-only t)
+   (vc-checkout file)
+   (with-temp-buffer
+     (let ((process-environment (copy-sequence (default-value 'process-environment))))
+       (setenv "P4CLIENT" "unrelated-client")
+       (funcall (vc-p4--job-prepare job))
+       (vc-p4-test-complete-operation job)))
+   (should-not buffer-read-only)
+   (should-not (vc-p4--operation-for file))))
+
+(ert-deftest vc-p4-preparation-quit-releases-operation-without-starting-worker ()
+  (vc-p4-test-async
+   (vc-p4-test-with-file "original\n"
+			 (let ((operation (vc-p4--operate "test" (list file) '("edit" "file") nil t
+							  (lambda () (signal 'quit nil)))))
+			   (should (condition-case nil (progn (vc-p4--dispatch) t) (quit nil)))
+			   (should (eq (plist-get (vc-p4--operation-result operation) :status) 'cancelled))
+			   (should-not (vc-p4--job-process (vc-p4--operation-job operation)))
+			   (should-not (vc-p4--operation-for file))))))
+
+(ert-deftest vc-p4-operations-reject-ellipsis-file-specifications ()
+  (vc-p4-test-operation
+   (should-error (vc-p4-checkout (concat file "...")) :type 'user-error)
+   (should-not job)))
+
+(ert-deftest vc-p4-registration-discovery-queues-independent-metadata-together ()
+  (vc-p4-test-operation
+   (vc-p4-root file)
+   (let (commands)
+     (maphash (lambda (key _) (push (car (nth 2 key)) commands)) vc-p4--metadata)
+     (should (member "where" commands))
+     (should (member "info" commands)))))
+
+(ert-deftest vc-p4-checkout-model-accepts-native-single-file-argument ()
+  (vc-p4-test-operation
+   (cl-letf (((symbol-function 'vc-p4--stat)
+              (lambda (path) (should (equal path file)) '((headType . "text"))))
+             ((symbol-function 'vc-p4--cached)
+              (lambda (&rest _) '(((Options . "noallwrite"))))))
+     (should (eq (vc-checkout-model 'P4 file) 'announce)))))

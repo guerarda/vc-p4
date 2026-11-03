@@ -17,13 +17,13 @@
 
 (defgroup vc-p4 nil "Perforce support for VC." :group 'vc)
 (defcustom vc-p4-program "p4" "Perforce command executable." :type 'string)
-(defcustom vc-p4-command-timeout 10 "Maximum seconds for a P4 query."
+(defcustom vc-p4-command-timeout 10 "Maximum seconds for a running P4 command."
   :type 'number)
 (defcustom vc-p4-metadata-ttl 2 "Seconds to cache file metadata."
   :type 'number)
 (defvar vc-p4--metadata (make-hash-table :test #'equal))
 (defvar vc-p4--contents (make-hash-table :test #'equal))
-(defvar vc-p4-last-error nil "Most recent discovery failure, for diagnostics.")
+(defvar vc-p4-last-error nil "Most recent P4 failure, for diagnostics.")
 (define-error 'vc-p4-error "Perforce command failed")
 
 (defcustom vc-p4-max-processes 4 "Maximum concurrent asynchronous P4 commands."
@@ -123,6 +123,7 @@ Release all resources before delivering the result to its callback."
                              #'vc-p4--finish job 'timeout
                              "P4 timed out; check connection/login"))
           (vc-p4--completed job))))
+    (quit (vc-p4--finish job 'cancelled "P4 command cancelled before execution"))
     (error (vc-p4--finish job 'error (error-message-string err)))))
 
 (defun vc-p4--dispatch ()
@@ -292,8 +293,9 @@ P4CONFIG candidate, so creating a nearer configuration invalidates caches."
               (vc-file-setprop file 'vc-state nil)
               (when (eq backend 'P4)
                 (vc-file-setprop file 'vc-backend 'none))
-              (setq vc-mode (when vc-p4-status
-                              (if (eq vc-p4-status 'error) " P4!" " P4?"))))
+              (setq vc-mode (when (or vc-p4-status vc-p4--operation-error)
+                              (if (or vc-p4--operation-error (eq vc-p4-status 'error))
+                                  " P4!" " P4?"))))
             (run-hooks 'vc-p4-update-hook)))))))
 
 (defun vc-p4--cached (file args &optional raw immutable)
@@ -363,6 +365,7 @@ Explicit invalidation is handled by `vc-p4-refresh', not by a wait here."
 (defun vc-p4-revision-granularity () "Use per-file revisions." 'file)
 (defun vc-p4-checkout-model (files)
   "Return the editing model for FILES in their current workspace."
+  (when (stringp files) (setq files (list files)))
   (if (null files) 'announce
     (if (cl-some (lambda (file)
                    (let* ((stat (vc-p4--stat file))
@@ -387,6 +390,7 @@ Explicit invalidation is handled by `vc-p4-refresh', not by a wait here."
                              (when (file-directory-p file)
                                (if (string-suffix-p "/" file) "..." "/..."))))
                (mappings (vc-p4--cached file (list "where" spec)))
+               (info (car (vc-p4--cached file '("info"))))
                (effective (make-hash-table :test #'equal))
                mapped)
           ;; Later mappings override the same path.  An excluded child does
@@ -396,7 +400,7 @@ Explicit invalidation is handled by `vc-p4-refresh', not by a wait here."
               (puthash path (not (assq 'unmap mapping)) effective)))
           (maphash (lambda (_path included) (when included (setq mapped t))) effective)
           (when mapped
-            (let ((root (alist-get 'clientRoot (car (vc-p4--cached file '("info"))))))
+            (let ((root (alist-get 'clientRoot info)))
               (when (and root (not (equal root "null")))
                 (file-name-as-directory root)))))
       (error nil))))
@@ -722,9 +726,9 @@ revision alone is not unique across Perforce clients or servers."
     (let ((context (vc-p4--context buffer-file-name))
           (stamp (vc-p4--file-stamp buffer-file-name)))
       (when (and vc-p4--buffer-context
-                 (not (equal context vc-p4--buffer-context))
-                 (bound-and-true-p diff-hl-mode))
-        (diff-hl-remove-overlays))
+                 (not (equal context vc-p4--buffer-context)))
+        (setq vc-p4--operation-error nil)
+        (when (bound-and-true-p diff-hl-mode) (diff-hl-remove-overlays)))
       (when (or (and vc-p4--buffer-context (not (equal context vc-p4--buffer-context)))
                 (and vc-p4--disk-stamp (not (equal stamp vc-p4--disk-stamp))))
         (vc-p4--buffer-cleanup)
@@ -902,7 +906,7 @@ cached baselines and may run local diff; automatic gutters always use ASYNC."
                      (eq (vc-file-getprop buffer-file-name 'vc-backend) 'P4)))
         (vc-file-setprop buffer-file-name 'vc-state nil)
         (vc-file-setprop buffer-file-name 'vc-working-revision nil)
-        (setq vc-p4-status 'pending vc-mode " P4?")
+        (setq vc-p4-status 'pending vc-mode " P4?" vc-p4--operation-error nil)
         (vc-p4--notify buffer-file-name (vc-p4--context buffer-file-name)))))))
 
 (defvar vc-p4--operations (make-hash-table :test #'equal))
@@ -922,6 +926,7 @@ cached baselines and may run local diff; automatic gutters always use ASYNC."
 (autoload 'vc-p4-rename-file "vc-p4-ops")
 (autoload 'vc-p4--vc-checkout "vc-p4-ops")
 (autoload 'vc-p4--vc-register "vc-p4-ops")
+(autoload 'vc-p4--vc-backend-for-registration "vc-p4-ops")
 (autoload 'vc-p4--vc-revert-file "vc-p4-ops")
 (autoload 'vc-p4--vc-revert "vc-p4-ops")
 (autoload 'vc-p4--vc-delete-file "vc-p4-ops")
@@ -933,6 +938,7 @@ cached baselines and may run local diff; automatic gutters always use ASYNC."
 (advice-add 'basic-save-buffer :before #'vc-p4--check-operation-save)
 (advice-add 'vc-checkout :around #'vc-p4--vc-checkout)
 (advice-add 'vc-register :around #'vc-p4--vc-register)
+(advice-add 'vc-backend-for-registration :around #'vc-p4--vc-backend-for-registration)
 (advice-add 'vc-revert-file :around #'vc-p4--vc-revert-file)
 (advice-add 'vc-revert :around #'vc-p4--vc-revert)
 (advice-add 'vc-delete-file :around #'vc-p4--vc-delete-file)

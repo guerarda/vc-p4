@@ -95,6 +95,33 @@
         (should (buffer-modified-p))
         (should-not (vc-p4--operation-recovery operation))))))
 
+(ert-deftest vc-p4-input-operation-timeout-releases-save-guard-with-recovery ()
+  (vc-p4-test-faults
+    (setenv "VC_P4_FAULT_ACTION" "edit")
+    (save-window-excursion
+      (find-file file)
+      (vc-p4-test-await (lambda () (eq (vc-file-getprop file 'vc-state) 'up-to-date)))
+      (setenv "VC_P4_FAULT_MODE" "hang")
+      (let* ((vc-p4-command-timeout 0.15)
+             (operation (vc-revert-file file))
+             (job (vc-p4--operation-job operation)))
+        (unwind-protect
+            (progn
+              (vc-p4-test-await (lambda () (vc-p4--job-process job)))
+              (vc-p4-test-queued-input #'ignore)
+              (should-error (save-buffer) :type 'user-error)
+              (vc-p4-test-await (lambda () (vc-p4--operation-result operation)))
+              (should (eq (plist-get (vc-p4--operation-result operation) :status) 'timeout))
+              (should-not (vc-p4--operation-for file))
+              (should-not (process-live-p (vc-p4--job-process job)))
+              (should (equal (vc-p4--local-bytes
+                              (expand-file-name "1" (vc-p4--operation-recovery operation)))
+                             "one\ntwo\nthree\n"))
+              (should (string-match-p "typed" (buffer-string)))
+              (vc-p4--check-operation-save))
+          (when (vc-p4--operation-recovery operation)
+            (delete-directory (vc-p4--operation-recovery operation) t)))))))
+
 (ert-deftest vc-p4-input-expired-state-save-and-refresh ()
   (vc-p4-test-faults
     (save-window-excursion

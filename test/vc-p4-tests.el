@@ -361,7 +361,8 @@
           (should-error (vc-p4-find-revision file "1" (current-buffer)) :type 'vc-p4-pending)
           (should (= (buffer-size) 0)))
         (dotimes (_ 10) (vc-p4-registered file) (vc-p4-state file))
-        (should (= calls 3))))))
+        ;; fstat, where, info and client are each queued only once.
+        (should (= calls 4))))))
 
 (ert-deftest vc-p4-cache-expiry-does-not-report-clean ()
   (vc-p4-test-with-file "contents"
