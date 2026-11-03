@@ -714,6 +714,10 @@ revision alone is not unique across Perforce clients or servers."
   (when (and buffer-file-name (not (file-remote-p buffer-file-name)))
     (let ((context (vc-p4--context buffer-file-name))
           (stamp (vc-p4--file-stamp buffer-file-name)))
+      (when (and vc-p4--buffer-context
+                 (not (equal context vc-p4--buffer-context))
+                 (bound-and-true-p diff-hl-mode))
+        (diff-hl-remove-overlays))
       (when (or (and vc-p4--buffer-context (not (equal context vc-p4--buffer-context)))
                 (and vc-p4--disk-stamp (not (equal stamp vc-p4--disk-stamp))))
         (vc-p4--buffer-cleanup)
@@ -737,26 +741,43 @@ revision alone is not unique across Perforce clients or servers."
 (add-hook 'after-revert-hook #'vc-p4--after-revert)
 
 (defun vc-p4--gutter-update (original &rest args)
-  "Force non-blocking P4 gutters when calling ORIGINAL with ARGS."
-  (when (and buffer-file-name
-             (or vc-p4--buffer-context
-                 (eq (vc-file-getprop buffer-file-name 'vc-backend) 'P4)))
-    (vc-p4--ensure-context))
-  (if (and buffer-file-name (eq (vc-backend buffer-file-name) 'P4))
+  "Update P4 gutters without clearing existing markers for pending data.
+Call ORIGINAL with ARGS once state is known; its asynchronous diff replaces
+markers on completion.  The mode line continues to identify pending work."
+  (let ((p4-buffer (and buffer-file-name
+                        (or vc-p4--buffer-context
+                            (eq (vc-file-getprop buffer-file-name 'vc-backend) 'P4)))))
+    (when p4-buffer
+      (setq vc-p4-status nil)
+      (vc-p4--ensure-context)
+      ;; VC caches negative discovery while our request is pending.  Recheck
+      ;; the backend cache so repeated updates retain the pending status.
+      (when (and (memq (vc-file-getprop buffer-file-name 'vc-backend) '(nil none))
+                 (vc-p4-registered buffer-file-name))
+        (vc-file-setprop buffer-file-name 'vc-backend 'P4)))
+    (cond
+     ((and buffer-file-name (eq (vc-backend buffer-file-name) 'P4))
       (let ((diff-hl-update-async t)
             (diff-hl-async-inhibit-functions nil))
         (setq vc-p4-status nil)
         (vc-file-setprop buffer-file-name 'vc-state (vc-p4-state buffer-file-name))
         (vc-mode-line buffer-file-name 'P4)
-        (condition-case err
-            (apply original args)
-          (vc-p4-error
-           (setq vc-p4-status (if (eq (car err) 'vc-p4-pending) 'pending 'error)
-                 vc-p4-last-error (error-message-string err))
-           (diff-hl-remove-overlays)
-           (vc-mode-line buffer-file-name 'P4)
-           nil)))
-    (apply original args)))
+        ;; diff-hl treats unknown state as no changes and removes overlays.
+        ;; Preserve the last display until a replacement can be computed.
+        (unless (eq vc-p4-status 'pending)
+          (condition-case err
+              (apply original args)
+            (vc-p4-error
+             (setq vc-p4-status (if (eq (car err) 'vc-p4-pending) 'pending 'error)
+                   vc-p4-last-error (error-message-string err))
+             (unless (eq vc-p4-status 'pending) (diff-hl-remove-overlays))
+             (vc-mode-line buffer-file-name 'P4)
+             nil)))))
+     ;; A saved file's changed disk stamp invalidates discovery too.
+     ((and p4-buffer (eq vc-p4-status 'pending))
+      (setq vc-mode " P4?")
+      nil)
+     (t (apply original args)))))
 
 (defun vc-p4--gutter-destination (buffer)
   "Give BUFFER a name unique to the visiting buffer."

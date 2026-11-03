@@ -89,7 +89,8 @@ After an external `p4 sync`, `p4 revert` or `p4 submit`:
    and gutters. The command returns immediately; the results arrive later.
 
 `P4?` in the mode line means work is pending; `P4!` means retrieval or diff
-failed. Pending data is not reported as a confirmed clean file. Closing a
+failed. During a save-triggered refresh, existing markers remain visible until
+the replacement result is ready. Pending data is not reported as a confirmed clean file. Closing a
 buffer cancels its pending work. External sync processes are not cancelled,
 and the backend never replaces unsaved buffer text.
 

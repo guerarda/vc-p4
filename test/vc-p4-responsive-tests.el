@@ -177,3 +177,45 @@
         (should (process-live-p worker))
         (vc-p4-test-queued-input (lambda () (vc-p4-state file)))
         (should (process-live-p worker))))))
+
+(ert-deftest vc-p4-save-retains-gutters-until-replacement-is-ready ()
+  (dolist (flydiff '(nil t))
+    (vc-p4-test-faults
+      (save-window-excursion
+        (find-file file)
+        (vc-p4-test-await (lambda () (eq (vc-file-getprop file 'vc-state) 'up-to-date)))
+        (diff-hl-mode 1)
+        (unwind-protect
+            (let ((make-backup-files nil))
+              (when flydiff (diff-hl-flydiff-mode 1))
+              (goto-char (point-min)) (forward-line 1)
+              (delete-region (point) (line-end-position)) (insert "changed")
+              (save-buffer)
+              (vc-p4-test-await (lambda () (equal (vc-p4-test-hunks) '((2 change)))))
+              (vc-p4-test-await (lambda () (and (null vc-p4--active)
+                                                (null vc-p4--queue)
+                                                (null vc-p4--diff-tasks)
+                                                (null vc-p4--notice-timer))))
+              (setenv "VC_P4_FAULT_DELAY" "0.15")
+              ;; Save a buffer with an existing marker, forcing rediscovery.
+              (goto-char (point-max)) (insert "extra\n")
+              (let ((overlays (cl-remove-if-not
+                               (lambda (ov) (overlay-get ov 'diff-hl))
+                               (overlays-in (point-min) (point-max)))))
+                (should overlays)
+                (save-buffer)
+                (dotimes (_ 3) (diff-hl-update))
+                (should (eq vc-p4-status 'pending))
+                (vc-p4-test-await
+                 (lambda ()
+                   ;; Check each event-loop turn, including metadata completion.
+                   (should (cl-every #'overlay-buffer overlays))
+                   (cl-some #'vc-p4--diff-task-worker vc-p4--diff-tasks)))
+                (should (equal (vc-p4-test-hunks) '((2 change))))
+                (vc-p4-test-await (lambda () (null vc-p4--diff-tasks))))
+              (should (equal (vc-p4-test-hunks) '((2 change) (4 insert))))
+              ;; A completed clean result must still clear the previous marker.
+              (erase-buffer) (insert "one\ntwo\nthree\n") (save-buffer)
+              (vc-p4-test-await (lambda () (eq (vc-file-getprop file 'vc-state) 'up-to-date)))
+              (vc-p4-test-await (lambda () (null (vc-p4-test-hunks)))))
+          (when flydiff (diff-hl-flydiff-mode -1)))))))

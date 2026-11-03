@@ -9,8 +9,8 @@ Validate other environments using the workspace smoke check.
 ## Checks
 
 - Warning-free byte compilation.
-- 46 backend/process tests; 57 total including three real diff-hl consumer tests
-  with mocked P4 retrieval and eight fault/input responsiveness tests.
+- 46 backend/process tests; 58 total including three real diff-hl consumer tests
+  with mocked P4 retrieval and nine fault/input responsiveness tests.
 - 18 disposable-server tests covering actual metadata, byte retrieval, state,
   mappings, checkout models and eight gutter scenarios. Run against both
   case-sensitive and case-insensitive servers; the alias-case assertion applies
@@ -59,7 +59,8 @@ The diff-hl source is unchanged. P4-only advice recognizes `needs-merge`, scopes
 revision-cache names, selects asynchronous saved/unsaved diff paths, separates
 output buffers, and rejects obsolete results immediately before overlay updates.
 A save hook invalidates VC state before diff-hl runs. Buffers show pending/error
-status instead of claiming unknown data is clean.
+status instead of claiming unknown data is clean. Same-workspace save updates
+retain existing gutter markers until the replacement result is ready.
 
 Metadata has a short TTL. Pristine numeric revisions are cached in memory by
 configuration, depot path and revision. P4CONFIG/P4ENVIRO attribute changes
