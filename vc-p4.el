@@ -533,8 +533,7 @@ revision alone is not unique across Perforce clients or servers."
                                      ((and valid (not cancelled)) 'error) (t 'pending)))
             (when (and valid (not success) (not cancelled))
               (with-current-buffer (vc-p4--diff-task-destination task)
-                (setq vc-p4--diff-failed-until (+ (float-time) vc-p4-retry-delay)))
-              (when (bound-and-true-p diff-hl-mode) (diff-hl-remove-overlays)))
+                (setq vc-p4--diff-failed-until (+ (float-time) vc-p4-retry-delay))))
             (vc-mode-line buffer-file-name 'P4)))))
     (let ((gate (vc-p4--diff-task-gate task)))
       (when (process-live-p gate)
@@ -671,10 +670,12 @@ revision alone is not unique across Perforce clients or servers."
               (run-at-time 0 nil #'vc-p4--diff-step task)))
       1)))
 
+(defvar diff-hl-timer)
 (defvar diff-hl-update-async)
 (defvar diff-hl-async-inhibit-functions)
 (defvar diff-hl-reference-revision)
 (declare-function diff-hl-update "diff-hl")
+(declare-function vc-p4-gutter--update "vc-p4-gutter")
 (declare-function diff-hl-remove-overlays "diff-hl")
 
 (defvar-local vc-p4--buffer-context nil)
@@ -748,7 +749,7 @@ markers on completion.  The mode line continues to identify pending work."
                         (or vc-p4--buffer-context
                             (eq (vc-file-getprop buffer-file-name 'vc-backend) 'P4)))))
     (when p4-buffer
-      (setq vc-p4-status nil)
+      (setq vc-p4-status nil diff-hl-timer nil)
       (vc-p4--ensure-context)
       ;; VC caches negative discovery while our request is pending.  Recheck
       ;; the backend cache so repeated updates retain the pending status.
@@ -759,23 +760,22 @@ markers on completion.  The mode line continues to identify pending work."
      ((and buffer-file-name (eq (vc-backend buffer-file-name) 'P4))
       (let ((diff-hl-update-async t)
             (diff-hl-async-inhibit-functions nil))
-        (setq vc-p4-status nil)
+        (setq vc-p4-status nil diff-hl-timer nil)
         (vc-file-setprop buffer-file-name 'vc-state (vc-p4-state buffer-file-name))
         (vc-mode-line buffer-file-name 'P4)
         ;; diff-hl treats unknown state as no changes and removes overlays.
         ;; Preserve the last display until a replacement can be computed.
-        (unless (eq vc-p4-status 'pending)
+        (unless (memq vc-p4-status '(pending error))
           (condition-case err
-              (apply original args)
+              (vc-p4-gutter--update)
             (vc-p4-error
              (setq vc-p4-status (if (eq (car err) 'vc-p4-pending) 'pending 'error)
                    vc-p4-last-error (error-message-string err))
-             (unless (eq vc-p4-status 'pending) (diff-hl-remove-overlays))
              (vc-mode-line buffer-file-name 'P4)
              nil)))))
      ;; A saved file's changed disk stamp invalidates discovery too.
-     ((and p4-buffer (eq vc-p4-status 'pending))
-      (setq vc-mode " P4?")
+     ((and p4-buffer vc-p4-status)
+      (setq vc-mode (if (eq vc-p4-status 'pending) " P4?" " P4!"))
       nil)
      (t (apply original args)))))
 
@@ -808,29 +808,25 @@ markers on completion.  The mode line continues to identify pending work."
         destination)
     (funcall original file destination backend context)))
 
-(defun vc-p4--gutter-resolve (original value callback)
-  "Validate P4 results again when ORIGINAL invokes CALLBACK for VALUE."
-  (let* ((buffer (and (not (listp value)) (get-buffer value)))
-         (task (and buffer (buffer-local-value 'vc-p4--diff-owner-task buffer))))
-    (if (not task) (funcall original value callback)
-      (funcall original value
-               (lambda (changes)
-                 (when (and (buffer-live-p (vc-p4--diff-task-source task))
-                            (with-current-buffer (vc-p4--diff-task-source task)
-                              (vc-p4--diff-valid-p task)))
-                   (funcall callback changes)))))))
-
 (defun vc-p4--update-gutters ()
   "Refresh enabled gutters after P4 data becomes available."
-  (when (bound-and-true-p diff-hl-mode)
-    (diff-hl-update)))
+  (if (bound-and-true-p diff-hl-mode)
+      (diff-hl-update)
+    ;; Reverting can reset minor-mode variables without running the mode's
+    ;; disable body.  Its old overlays must not survive that transition.
+    (when (and buffer-file-name
+               (eq (vc-file-getprop buffer-file-name 'vc-backend) 'P4))
+      (diff-hl-remove-overlays))))
 
 (with-eval-after-load 'diff-hl
   (advice-add 'diff-hl-update :around #'vc-p4--gutter-update)
-  (advice-add 'diff-hl--resolve :around #'vc-p4--gutter-resolve)
+  (require 'vc-p4-gutter)
+  ;; Remove the older global completion advice when reloading this library.
+  (advice-remove 'diff-hl--resolve 'vc-p4--gutter-resolve)
   (advice-add 'diff-hl-changes-buffer :around #'vc-p4--gutter-changes)
   (advice-add 'diff-hl-diff-buffer-with-reference :around #'vc-p4--gutter-buffer-diff)
-  (add-hook 'vc-p4-update-hook #'vc-p4--update-gutters))
+  (add-hook 'vc-p4-update-hook #'vc-p4--update-gutters)
+  (add-hook 'flycheck-mode-hook #'vc-p4--update-gutters))
 
 (defun vc-p4--require-base (file revision)
   "Return cached bytes for FILE at REVISION or fail without waiting."
@@ -897,7 +893,6 @@ cached baselines and may run local diff; automatic gutters always use ASYNC."
         (vc-file-setprop buffer-file-name 'vc-state nil)
         (vc-file-setprop buffer-file-name 'vc-working-revision nil)
         (setq vc-p4-status 'pending vc-mode " P4?")
-        (when (bound-and-true-p diff-hl-mode) (diff-hl-remove-overlays))
         (vc-p4--notify buffer-file-name (vc-p4--context buffer-file-name)))))))
 
 ;; Deliberately fail unsupported mutations rather than invoking generic fallbacks.

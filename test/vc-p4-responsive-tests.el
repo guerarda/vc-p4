@@ -1,5 +1,5 @@
 ;;; vc-p4-responsive-tests.el --- Input responsiveness gates -*- lexical-binding: t; -*-
-(require 'vc-p4-diff-hl-tests)
+(require 'vc-p4-gutter-tests)
 (defconst vc-p4-test-worker
   (expand-file-name "fault-worker.py" (file-name-directory load-file-name)))
 (defvar vc-p4-test-command nil)
@@ -212,7 +212,13 @@
                    (should (cl-every #'overlay-buffer overlays))
                    (cl-some #'vc-p4--diff-task-worker vc-p4--diff-tasks)))
                 (should (equal (vc-p4-test-hunks) '((2 change))))
-                (vc-p4-test-await (lambda () (null vc-p4--diff-tasks))))
+                (vc-p4-test-await (lambda () (equal (vc-p4-test-hunks) '((2 change) (4 insert)))))
+                ;; Stability is required through completion, not just while pending.
+                (should (cl-every #'overlay-buffer overlays))
+                (dotimes (_ 3)
+                  (diff-hl-update)
+                  (vc-p4-test-await (lambda () (null vc-p4--diff-tasks)))
+                  (should (cl-every #'overlay-buffer overlays))))
               (should (equal (vc-p4-test-hunks) '((2 change) (4 insert))))
               ;; A completed clean result must still clear the previous marker.
               (erase-buffer) (insert "one\ntwo\nthree\n") (save-buffer)
