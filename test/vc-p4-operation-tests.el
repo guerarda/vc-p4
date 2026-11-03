@@ -99,3 +99,32 @@
         (should-not vc-p4--active)))))
 
 (provide 'vc-p4-operation-tests)
+
+(ert-deftest vc-p4-register-native-front-end-defers-state-and-buffer-effects ()
+  (vc-p4-test-operation
+    (cl-letf (((symbol-function 'vc-p4-registered) (lambda (_) nil)))
+      (vc-file-setprop file 'vc-backend 'none)
+      (let ((before (buffer-string)))
+        (vc-register (list 'P4 (list file)))
+        (should (eq (vc-file-getprop file 'vc-backend) 'none))
+        (should (equal (vc-p4--job-command job) (list "-Mj" "-ztag" "add" "-f" file)))
+        (insert "typing while pending")
+        (vc-p4-test-complete-operation job '(:status success :stdout "{\"action\":\"add\"}\n"))
+        (should (string-match-p (regexp-quote before) (buffer-string)))
+        (should (buffer-modified-p))
+        (should-not (vc-file-getprop file 'vc-state))))))
+
+(ert-deftest vc-p4-register-failure-never-claims-a-new-file ()
+  (vc-p4-test-operation
+    (cl-letf (((symbol-function 'vc-p4-registered) (lambda (_) nil)))
+      (vc-file-setprop file 'vc-backend 'none)
+      (vc-register (list 'P4 (list file)))
+      (vc-p4-test-complete-operation job '(:status error :stderr "not in view"))
+      (should-not (eq (vc-file-getprop file 'vc-backend) 'P4))
+      (should (equal (buffer-string) "original\n"))
+      (should (file-exists-p file)))))
+
+(ert-deftest vc-p4-register-delegates-other-backends-and-rejects-directories ()
+  (should (equal (vc-p4--vc-register #'list '(Git ("file")) "comment")
+                 '((Git ("file")) "comment")))
+  (should-error (vc-p4-register (list temporary-file-directory)) :type 'user-error))

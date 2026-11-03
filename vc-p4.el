@@ -952,8 +952,7 @@ cached baselines and may run local diff; automatic gutters always use ASYNC."
      (when (equal context (vc-p4--context file))
        (when-let* ((buffer (get-file-buffer file)))
          (with-current-buffer buffer
-           (setq vc-p4--operation-error (vc-p4--operation-error operation))
-           (vc-file-setprop file 'vc-backend 'P4)))
+           (setq vc-p4--operation-error (vc-p4--operation-error operation))))
        (vc-p4--notify file context)))
    (vc-p4--operation-files operation) (vc-p4--operation-contexts operation))
   (message "P4 %s: %s" (vc-p4--operation-name operation)
@@ -1025,9 +1024,35 @@ Changing to REVISION is a sync operation and is not implemented here."
 
 (advice-add 'vc-checkout :around #'vc-p4--vc-checkout)
 
+(defun vc-p4-register (files &optional _comment)
+  "Open individual FILES for add asynchronously, preserving literal filenames."
+  (setq files (mapcar #'expand-file-name (if (stringp files) (list files) files)))
+  (dolist (file files)
+    (when (or (file-remote-p file) (file-directory-p file) (not (file-exists-p file)))
+      (user-error "Save each local file before adding it to P4"))
+    (when (vc-p4--operation-for file)
+      (user-error "A P4 operation is already pending for %s" file)))
+  ;; add -f interprets raw names literally; escaping them would add the wrong
+  ;; path.  One command per file also makes partial fileset failures explicit.
+  (mapcar (lambda (file) (vc-p4--operate "add" (list file) (list "add" "-f" file)))
+          files))
+
+(defun vc-p4--vc-register (original &optional fileset comment)
+  "Register P4 FILESET asynchronously, delegating ORIGINAL for other backends."
+  (let ((fileset (or fileset (vc-deduce-fileset nil t))))
+    (if (not (eq (car fileset) 'P4))
+        (funcall original fileset comment)
+      (dolist (file (cadr fileset))
+        (when (vc-p4-registered file)
+          (user-error "This file is already registered: %s" file))
+        (when-let* ((buffer (get-file-buffer file)))
+          (with-current-buffer buffer (vc-buffer-sync))))
+      (vc-p4-register (cadr fileset) comment))))
+
+(advice-add 'vc-register :around #'vc-p4--vc-register)
+
 ;; Deliberately fail unsupported mutations rather than invoking generic fallbacks.
 (defun vc-p4-checkin (&rest _args) "Submit is not implemented yet." (user-error "P4 submit is not implemented yet"))
-(defun vc-p4-register (&rest _args) "Add is not implemented yet." (user-error "P4 add is not implemented yet"))
 (defun vc-p4-revert (&rest _args) "Revert is not implemented yet." (user-error "P4 revert is not implemented yet"))
 ;;;###autoload
 (add-to-list 'vc-handled-backends 'P4 t)
