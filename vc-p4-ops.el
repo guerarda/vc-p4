@@ -1,0 +1,388 @@
+;;; vc-p4-ops.el --- Asynchronous Perforce file operations -*- lexical-binding: t; -*-
+
+;; Package-Requires: ((emacs "30.1"))
+
+;;; Commentary:
+;; Mutation lifecycle, recovery and native VC completion adapters for vc-p4.
+
+;;; Code:
+(require 'vc-p4)
+
+;; VC's mutation frontends assume synchronous completion.  These narrow P4
+;; adapters defer their buffer-side effects until the command has succeeded.
+(cl-defstruct (vc-p4--operation (:constructor vc-p4--make-operation))
+  name files contexts job result error success stamps buffers destructive recovery
+  commands prepared validate keys environment exec-path program)
+(defun vc-p4--invalidate-file (file &optional keep-properties)
+  "Invalidate FILE's metadata and cancel obsolete reads, preserving other files."
+  (vc-p4--cancel-file-work file)
+  (let (keys)
+    (maphash (lambda (key _)
+               (when (equal (file-truename (nth 1 key)) (file-truename file))
+                 (push key keys))) vc-p4--metadata)
+    (dolist (key keys) (remhash key vc-p4--metadata)))
+  (unless keep-properties (vc-file-clearprops file)))
+
+(defun vc-p4--check-saved (files)
+  "Reject unsaved buffers visiting FILES before a destructive operation."
+  (dolist (file files)
+    (when-let* ((buffer (get-file-buffer file)))
+      (when (buffer-modified-p buffer)
+        (user-error "Save or undo buffer changes before operating on %s" file)))))
+
+(defun vc-p4--operation-prepare (operation)
+  "Recheck OPERATION at dispatch and save recoverable copies before changing files."
+  (let ((files (vc-p4--operation-files operation)))
+    (unless (equal (vc-p4--operation-contexts operation) (mapcar #'vc-p4--context files))
+      (user-error "P4 configuration changed before operation started"))
+    (when (vc-p4--operation-validate operation)
+      (funcall (vc-p4--operation-validate operation)))
+    (when (vc-p4--operation-destructive operation)
+      (vc-p4--check-saved files)
+      (unless (equal (vc-p4--operation-stamps operation) (mapcar #'vc-p4--file-stamp files))
+        (user-error "Files changed before P4 operation started"))
+      (unless (vc-p4--operation-prepared operation)
+        (let ((directory (make-temp-file "vc-p4-recovery-" t)) (index 0) manifest)
+          (setf (vc-p4--operation-recovery operation) directory)
+          (dolist (file files)
+            (when (file-exists-p file)
+              (let ((copy (expand-file-name (number-to-string (cl-incf index)) directory)))
+                (copy-file file copy nil t nil t)
+                (push (cons file copy) manifest))))
+          (with-temp-file (expand-file-name "files.el" directory)
+            (prin1 (nreverse manifest) (current-buffer)))
+          (setf (vc-p4--operation-prepared operation) t))))))
+
+(defun vc-p4--operation-resynch (operation file &optional target keep-text)
+  "Update FILE's original buffer after OPERATION, optionally renaming to TARGET.
+KEEP-TEXT skips reload for a move.  Newer buffer edits are always preserved."
+  (when-let* ((snapshot (assoc file (vc-p4--operation-buffers operation)))
+              (buffer (nth 1 snapshot)))
+    (when (and (buffer-live-p buffer)
+               (equal (buffer-local-value 'buffer-file-name buffer) file)
+               (equal (vc-p4--context file)
+                      (nth (cl-position file (vc-p4--operation-files operation) :test #'equal)
+                           (vc-p4--operation-contexts operation))))
+      (with-current-buffer buffer
+        (when target
+          (when-let* ((other (get-file-buffer target)))
+            (unless (eq other buffer) (user-error "Already visiting move target %s" target)))
+          (let ((modified (buffer-modified-p)))
+            (set-visited-file-name target t t)
+            (set-buffer-modified-p modified))
+          (setq file target))
+        (cond
+         (keep-text (read-only-mode (if (file-writable-p file) -1 1)))
+         ((or (buffer-modified-p) (/= (buffer-chars-modified-tick) (nth 2 snapshot)))
+            (message "P4 finished; kept newer buffer text in %s" (buffer-name))
+            (set-buffer-modified-p t))
+         ((file-exists-p file)
+              (progn (revert-buffer t t t)
+                     (read-only-mode (if (file-writable-p file) -1 1))))
+         (t
+            ;; Keep the visiting buffer available for undo/recovery after delete.
+            (clear-visited-file-modtime)
+            (read-only-mode 1)))))))
+
+(defun vc-p4--check-operation-save (&rest _)
+  "Prevent a save racing a destructive P4 command; typing remains available."
+  (when-let* ((operation (vc-p4--operation-for buffer-file-name)))
+    (when (vc-p4--operation-destructive operation)
+      (user-error "P4 %s is pending; wait or cancel before saving"
+                  (vc-p4--operation-name operation)))))
+
+
+(defun vc-p4--check-operation-result (result)
+  "Require a confirmed file action in RESULT, preserving server diagnostics."
+  (unless (eq (plist-get result :status) 'success)
+    (signal 'vc-p4-error
+            (list (format "%s: %s%s%s" (plist-get result :status)
+                          (or (plist-get result :detail) "")
+                          (or (plist-get result :stderr) "")
+                          (or (plist-get result :stdout) "")))))
+  (let ((records (vc-p4--parse-json (plist-get result :stdout))))
+    (unless (cl-some (lambda (record) (alist-get 'action record)) records)
+      (signal 'vc-p4-error
+              (list (or (cl-some (lambda (record) (alist-get 'data record)) records)
+                        "No file action confirmed"))))))
+
+(defun vc-p4--operation-note-error (operation error)
+  "Record ERROR on OPERATION without masking an earlier failure."
+  (unless (vc-p4--operation-error operation)
+    (setf (vc-p4--operation-error operation) (error-message-string error)))
+  (setq vc-p4-last-error (vc-p4--operation-error operation)))
+
+(defun vc-p4--operation-finish (operation result)
+  "Publish RESULT for OPERATION and release files even if UI or cleanup fails."
+  (setf (vc-p4--operation-result operation) result)
+  (unwind-protect
+      (condition-case err
+          (progn
+            (vc-p4--check-operation-result result)
+            (when (vc-p4--operation-success operation)
+              (funcall (vc-p4--operation-success operation) operation)))
+        ((error quit) (vc-p4--operation-note-error operation err)))
+    (dolist (key (vc-p4--operation-keys operation))
+      (remhash key vc-p4--operations)))
+  (when (and (vc-p4--operation-recovery operation)
+             (not (vc-p4--operation-error operation)))
+    (condition-case err
+        (progn
+          (delete-directory (vc-p4--operation-recovery operation) t)
+          (setf (vc-p4--operation-recovery operation) nil))
+      (error (vc-p4--operation-note-error operation err))))
+  (cl-mapc
+   (lambda (file context)
+     (condition-case err
+         (progn
+           (vc-p4--invalidate-file
+            file (or (not (equal context (vc-p4--context file)))
+                     (not (memq (vc-file-getprop file 'vc-backend) '(nil none P4)))))
+           (when (equal context (vc-p4--context file))
+             (when-let* ((buffer (get-file-buffer file)))
+               (with-current-buffer buffer
+                 (setq vc-p4--operation-error (vc-p4--operation-error operation))))
+             (vc-p4--notify file context)))
+       (error (vc-p4--operation-note-error operation err))))
+   (vc-p4--operation-files operation) (vc-p4--operation-contexts operation))
+  (message "P4 %s: %s%s" (vc-p4--operation-name operation)
+           (or (vc-p4--operation-error operation) "done")
+           (if (vc-p4--operation-recovery operation)
+               (format "; recovery copies: %s" (vc-p4--operation-recovery operation)) "")))
+
+(defun vc-p4--operation-run (operation)
+  "Queue the next command of OPERATION with its original execution environment."
+  (let ((process-environment (vc-p4--operation-environment operation))
+        (exec-path (vc-p4--operation-exec-path operation))
+        (vc-p4-program (vc-p4--operation-program operation))
+        (args (pop (vc-p4--operation-commands operation))))
+    (setf (vc-p4--operation-job operation)
+          (apply #'vc-p4--run-async (file-name-directory (car (vc-p4--operation-files operation)))
+                 (lambda (result)
+                   (if (vc-p4--operation-commands operation)
+                       (if (condition-case nil
+                               (progn (vc-p4--check-operation-result result) t)
+                             (error nil))
+                           (condition-case err
+                               (progn
+                                 (setf (vc-p4--operation-stamps operation)
+                                       (mapcar #'vc-p4--file-stamp (vc-p4--operation-files operation)))
+                                 (vc-p4--operation-run operation))
+                             (error (vc-p4--operation-finish
+                                     operation (list :status 'error :detail (error-message-string err)))))
+                         (vc-p4--operation-finish operation result))
+                     (vc-p4--operation-finish operation result)))
+                 "-Mj" "-ztag" args))
+    (setf (vc-p4--job-prepare (vc-p4--operation-job operation))
+          (lambda () (vc-p4--operation-prepare operation)))))
+
+(defun vc-p4--operate (name files args &optional success destructive validate)
+  "Queue mutation NAME of FILES with ARGS and a SUCCESS completion function.
+SUCCESS receives the completed operation.  DESTRUCTIVE enables disk recovery
+copies and save protection.  VALIDATE checks operation-specific preconditions
+at dispatch.  ARGS may be a list of commands to run in order.  Never retry."
+  (setq files (mapcar #'expand-file-name files))
+  (dolist (file files)
+    (when (or (file-remote-p file) (file-directory-p file))
+      (user-error "P4 operations require individual local files"))
+    (when (vc-p4--operation-for file)
+      (user-error "A P4 operation is already pending for %s" file)))
+  (when destructive (vc-p4--check-saved files))
+  (let ((operation (vc-p4--make-operation
+                    :name name :files files :contexts (mapcar #'vc-p4--context files)
+                    :success success :destructive destructive
+                    :commands (if (stringp (car args)) (list args) (copy-sequence args))
+                    :environment (copy-sequence process-environment)
+                    :exec-path (copy-sequence exec-path) :program vc-p4-program
+                    :validate validate
+                    :keys (delete-dups (append files (mapcar #'file-truename files)))
+                    :stamps (mapcar #'vc-p4--file-stamp files)
+                    :buffers (mapcar (lambda (file)
+                                       (when-let* ((buffer (get-file-buffer file)))
+                                         (list file buffer (with-current-buffer buffer
+                                                             (buffer-chars-modified-tick))))) files))))
+    (setq vc-p4-last-operation operation)
+    (dolist (key (vc-p4--operation-keys operation))
+      (puthash key operation vc-p4--operations))
+    (dolist (file files)
+      (vc-p4--invalidate-file file t)
+      (vc-file-setprop file 'vc-state nil)
+      (when-let* ((buffer (get-file-buffer file)))
+        (with-current-buffer buffer
+          (setq vc-p4--operation-error nil vc-mode " P4?"))))
+    (vc-p4--operation-run operation)
+    operation))
+
+(defun vc-p4-cancel-operation ()
+  "Cancel this file's pending P4 operation and refresh its actual state.
+A running command may already have changed the workspace or server."
+  (interactive)
+  (if-let* ((operation (vc-p4--operation-for buffer-file-name)))
+      (vc-p4--cancel (vc-p4--operation-job operation))
+    (user-error "No P4 operation is pending for this file")))
+
+(defun vc-p4-checkout (file &optional revision)
+  "Open FILE for edit asynchronously, preserving its HAVE revision and text.
+Changing to REVISION is a sync operation and is not implemented here."
+  (when revision (user-error "Use p4 sync to change revisions"))
+  (let ((file (expand-file-name file))
+        (context (vc-p4--context file)))
+    (vc-p4--operate
+     "edit" (list file) (list "edit" (vc-p4--escape file))
+     (lambda (_operation)
+       (when (equal context (vc-p4--context file))
+         (when-let* ((buffer (get-file-buffer file)))
+           (with-current-buffer buffer
+             ;; edit changes permissions, never buffer contents or undo history.
+             (read-only-mode (if (file-writable-p file) -1 1))
+             (run-hooks 'vc-checkout-hook))))))))
+
+(defun vc-p4--vc-checkout (original file &optional revision)
+  "Route P4 checkout through completion handling; delegate ORIGINAL otherwise."
+  (if (eq (vc-backend file) 'P4)
+      (vc-p4-checkout file revision)
+    (funcall original file revision)))
+
+(defun vc-p4-edit ()
+  "Open the current file for edit, including in an allwrite workspace."
+  (interactive)
+  (vc-checkout (or buffer-file-name (user-error "This buffer visits no file"))))
+
+
+(defun vc-p4-register (files &optional _comment)
+  "Open individual FILES for add asynchronously, preserving literal filenames."
+  (setq files (mapcar #'expand-file-name (if (stringp files) (list files) files)))
+  (dolist (file files)
+    (when (or (file-remote-p file) (file-directory-p file) (not (file-exists-p file)))
+      (user-error "Save each local file before adding it to P4"))
+    (when (vc-p4--operation-for file)
+      (user-error "A P4 operation is already pending for %s" file)))
+  ;; add -f interprets raw names literally; escaping them would add the wrong
+  ;; path.  One command per file also makes partial fileset failures explicit.
+  (mapcar (lambda (file) (vc-p4--operate "add" (list file) (list "add" "-f" file)))
+          files))
+
+(defun vc-p4--vc-register (original &optional fileset comment)
+  "Register P4 FILESET asynchronously, delegating ORIGINAL for other backends."
+  (let ((fileset (or fileset (vc-deduce-fileset nil t))))
+    (if (not (eq (car fileset) 'P4))
+        (funcall original fileset comment)
+      (dolist (file (cadr fileset))
+        (when (vc-p4-registered file)
+          (user-error "This file is already registered: %s" file))
+        (when-let* ((buffer (get-file-buffer file)))
+          (with-current-buffer buffer (vc-buffer-sync))))
+      (vc-p4-register (cadr fileset) comment))))
+
+
+(defun vc-p4--require-stat (file)
+  "Return FILE's metadata or request that the caller retry after retrieval."
+  (or (vc-p4--stat file)
+      (if (eq vc-p4-status 'error)
+          (signal 'vc-p4-error (list vc-p4-last-error))
+        (signal 'vc-p4-pending (list "Retry when P4 metadata is ready" file)))))
+
+(defun vc-p4-revert (file &optional _contents-done)
+  "Revert FILE to HAVE asynchronously, retaining copies if the operation fails."
+  (setq file (expand-file-name file))
+  (let* ((stat (vc-p4--require-stat file))
+         (action (alist-get 'action stat)))
+    (unless (or action (alist-get 'haveRev stat))
+      (user-error "No working revision to restore"))
+    (if (member action '("move/add" "move/delete"))
+        (let* ((depot (alist-get 'movedFile stat))
+               (mappings (and depot (vc-p4--cached file (list "where" depot))))
+               (partner (alist-get 'path (car (last mappings)))))
+          (unless partner (signal 'vc-p4-pending (list "Retrieving move partner" file)))
+          (if (equal action "move/delete") (vc-p4-revert partner)
+            (vc-p4--check-move-target partner)
+            (vc-p4--operate
+             "revert move" (list file partner) (list "revert" (vc-p4--escape file))
+             (lambda (operation) (vc-p4--operation-resynch operation file partner)) t
+             (lambda () (vc-p4--check-move-target partner)))))
+      (vc-p4--operate
+       "revert" (list file)
+       (if action (list "revert" (vc-p4--escape file))
+         (list "sync" "-f" (concat (vc-p4--escape file) "#" (alist-get 'haveRev stat))))
+       (lambda (operation) (vc-p4--operation-resynch operation file)) t))))
+
+(defun vc-p4--vc-revert-file (original file)
+  "Defer P4 buffer reload until revert completes, otherwise call ORIGINAL."
+  (if (eq (vc-backend file) 'P4) (vc-p4-revert file) (funcall original file)))
+
+(defun vc-p4--vc-revert (original)
+  "Confirm P4 revert without a synchronous preview; delegate ORIGINAL otherwise."
+  (let ((fileset (vc-deduce-fileset)))
+    (if (not (eq (car fileset) 'P4)) (funcall original)
+      (let ((files (cadr fileset)))
+        (vc-p4--check-saved files)
+        ;; Validate the whole selection before starting any mutation.
+        (mapc #'vc-p4--require-stat files)
+        (unless (yes-or-no-p (format "Discard saved changes in %s? " (vc-delistify files)))
+          (user-error "Revert canceled"))
+        (mapcar #'vc-p4-revert files)))))
+
+(defun vc-p4-delete-file (file)
+  "Open FILE for deletion asynchronously, keeping a recovery copy on failure."
+  (setq file (expand-file-name file))
+  (vc-p4--require-stat file)
+  (let ((state (vc-p4-state file)))
+    (unless (memq state '(up-to-date needs-update missing))
+      (if (null state) (signal 'vc-p4-pending (list file))
+        (user-error "Revert local changes before deleting %s" file))))
+  (vc-p4--operate "delete" (list file) (list "delete" (vc-p4--escape file))
+                  (lambda (operation) (vc-p4--operation-resynch operation file)) t))
+
+(defun vc-p4--vc-delete-file (original file)
+  "Confirm and schedule P4 deletion; delegate ORIGINAL for other backends."
+  (if (not (eq (vc-backend file) 'P4)) (funcall original file)
+    (vc-p4--check-saved (list file))
+    (unless (y-or-n-p (format "Really want to delete %s? " (file-name-nondirectory file)))
+      (user-error "Delete canceled"))
+    (vc-p4-delete-file file)))
+
+
+(defun vc-p4--check-move-target (file)
+  "Reject an existing or visited move target FILE, including dangling symlinks."
+  (when (or (file-exists-p file) (file-symlink-p file) (get-file-buffer file))
+    (user-error "Move target already exists or is visited: %s" file)))
+
+(defun vc-p4--workspace-identity (file)
+  "Return the confirmed server/client/root identity responsible for FILE."
+  (let ((root (vc-p4-root file)))
+    (unless root
+      (if (eq vc-p4-status 'pending) (signal 'vc-p4-pending (list file))
+        (user-error "File is not in a mapped P4 workspace: %s" file)))
+    (let ((info (car (vc-p4--cached file '("info")))))
+      (list (alist-get 'serverAddress info) (alist-get 'clientName info) root))))
+
+(defun vc-p4-rename-file (old new)
+  "Move OLD to NEW asynchronously, opening OLD for edit if necessary."
+  (setq old (expand-file-name old)
+        new (expand-file-name (if (string-suffix-p "/" new)
+                                  (concat new (file-name-nondirectory old)) new)))
+  (vc-p4--check-move-target new)
+  (unless (file-exists-p old) (user-error "Move source is missing: %s" old))
+  (unless (equal (vc-p4--workspace-identity old) (vc-p4--workspace-identity new))
+    (user-error "P4 moves must stay within the same workspace"))
+  (let* ((stat (vc-p4--require-stat old))
+         (action (alist-get 'action stat))
+         (state (vc-p4-state old)))
+    (unless (and (member action '(nil "edit" "add" "move/add"))
+                 (memq state '(up-to-date edited added)))
+      (if (null state) (signal 'vc-p4-pending (list old))
+        (user-error "Resolve or update the file before moving it")))
+    (vc-p4--operate
+     "move" (list old new)
+     (append (unless action (list (list "edit" (vc-p4--escape old))))
+             (list (list "move" (vc-p4--escape old) (vc-p4--escape new))))
+     (lambda (operation) (vc-p4--operation-resynch operation old new t)) t
+     (lambda () (vc-p4--check-move-target new)))))
+
+(defun vc-p4--vc-rename-file (original old new)
+  "Defer P4 buffer renaming until success; delegate ORIGINAL otherwise."
+  (if (eq (vc-backend old) 'P4) (vc-p4-rename-file old new) (funcall original old new)))
+
+
+(provide 'vc-p4-ops)
+;;; vc-p4-ops.el ends here

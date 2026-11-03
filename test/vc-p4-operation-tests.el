@@ -1,5 +1,6 @@
 ;;; vc-p4-operation-tests.el --- Native VC mutation contracts -*- lexical-binding: t; -*-
 (require 'vc-p4-tests)
+(require 'vc-p4-ops)
 
 (defmacro vc-p4-test-operation (&rest body)
   "Run BODY with a visiting FILE and a manually completed mutation JOB."
@@ -99,6 +100,23 @@
         (should-not vc-p4--active)))))
 
 (provide 'vc-p4-operation-tests)
+
+(ert-deftest vc-p4-operations-autoload-from-native-vc-in-fresh-emacs ()
+  (vc-p4-test-with-file "original\n"
+    (with-temp-buffer
+      (let ((form `(progn
+                     (require 'vc-p4)
+                     (when (featurep 'vc-p4-ops) (error "Operations loaded eagerly"))
+                     (setq vc-p4-program "/nonexistent/p4")
+                     (vc-file-setprop ,file 'vc-backend 'P4)
+                     (let ((operation (vc-checkout ,file)))
+                       (unless (featurep 'vc-p4-ops) (error "Missing operation module"))
+                       (vc-p4--cancel (vc-p4--operation-job operation))))))
+        (should (zerop (call-process
+                        (expand-file-name invocation-name invocation-directory)
+                        nil t nil "-Q" "--batch" "-L"
+                        (file-name-directory (locate-library "vc-p4"))
+                        "--eval" (prin1-to-string form))))))))
 
 (ert-deftest vc-p4-register-native-front-end-defers-state-and-buffer-effects ()
   (vc-p4-test-operation

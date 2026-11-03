@@ -6,7 +6,7 @@ DIFF_HL_DIR ?=
 .PHONY: check compile test test-diff-hl test-flycheck integration clean
 check: compile test
 compile:
-	$(EMACS) -Q --batch -L . --eval '(setq byte-compile-error-on-warn t)' -f batch-byte-compile vc-p4.el vc-p4-gutter.el
+	$(EMACS) -Q --batch -L . --eval '(setq byte-compile-error-on-warn t)' -f batch-byte-compile vc-p4.el vc-p4-ops.el vc-p4-gutter.el
 test:
 	$(EMACS) -Q --batch --eval '(setq load-prefer-newer t)' -L . -L test -l vc-p4-operation-tests -f ert-run-tests-batch-and-exit
 test-diff-hl:
@@ -18,4 +18,4 @@ test-flycheck:
 integration:
 	$(PYTHON) scripts/p4_fixture.py --emacs '$(EMACS)'
 clean:
-	rm -f vc-p4.elc vc-p4-gutter.elc
+	rm -f vc-p4.elc vc-p4-ops.elc vc-p4-gutter.elc
