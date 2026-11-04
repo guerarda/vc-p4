@@ -9,9 +9,9 @@ Validate other environments using the workspace smoke check.
 ## Checks
 
 - Warning-free byte compilation.
-- 85 backend/process/operation tests; 109 total including three real diff-hl
+- 88 backend/process/operation tests; 112 total including three real diff-hl
   consumer tests, nine incremental-rendering tests and twelve fault/input tests.
-- 26 disposable-server tests covering actual metadata, byte retrieval, state,
+- 27 disposable-server tests covering actual metadata, byte retrieval, state,
   mappings, native file operations and nine gutter scenarios. Run against both
   case-sensitive and case-insensitive servers; the alias-case assertion applies
   only to the latter.
@@ -77,6 +77,11 @@ retrying the mutation or pretending to undo server changes. Cleanup failures
 still release pending-file guards. Recovery copies are outside the repository.
 Mutations invalidate only affected metadata; a real gutter test verifies that
 native revert converges while an unrelated cache entry remains untouched.
+If auto-revert reloads the file before mutation completion, a changed buffer
+tick no longer makes that clean buffer appear unsaved.  Completion preserves
+its clean state only when the full decoded buffer matches disk, including
+when narrowed; genuinely newer edits remain protected.  A real-server test
+forces this ordering through Emacs's auto-revert handler.
 
 A complete current result is reconciled against existing line and hunk overlays
 with redisplay inhibited during the commit. Identical results perform no overlay

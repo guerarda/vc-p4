@@ -45,7 +45,9 @@ mutation has finished, explicitly reload the backend and its companion modules:
    edit without saving; expect its marker after the idle delay. This mode is optional.
 4. Save the disposable edits, then use `C-x v u` and confirm the selected test
    file. Expect its synced contents, the appropriate read-only flag, and no
-   markers after completion. Discard only the disposable edits made in this check.
+   markers after completion. Without further typing, the buffer should show no
+   unsaved-change indicator, and `M-: (buffer-modified-p)` should return `nil`.
+   Discard only the disposable edits made in this check.
 5. If a safely available file has an older have revision than head, check that
    local edits are compared with have, not head. No need to change production
    history or sync backwards just to manufacture this case; it is automated.

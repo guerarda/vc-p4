@@ -128,6 +128,23 @@ Call CLEANUP once when the pending continuation ends, including cancellation."
             (prin1 (nreverse manifest) (current-buffer)))
           (setf (vc-p4--operation-prepared operation) t))))))
 
+(defun vc-p4--buffer-matches-file-p (file)
+  "Return non-nil if the full current buffer equals decoded contents of FILE.
+Use the visiting buffer's coding system; ignore narrowing and text properties.
+An unreadable or missing file cannot establish that the buffer is clean."
+  (let ((source (current-buffer))
+        (coding-system-for-read buffer-file-coding-system)
+        (case-fold-search nil))
+    (condition-case nil
+        (with-temp-buffer
+          (insert-file-contents file)
+          (let ((disk (current-buffer)))
+            (with-current-buffer source
+              (save-restriction
+                (widen)
+                (zerop (compare-buffer-substrings source nil nil disk nil nil))))))
+      (file-error nil))))
+
 (defun vc-p4--operation-resynch (operation file &optional target keep-text)
   "Update FILE's original buffer after OPERATION, optionally renaming to TARGET.
 KEEP-TEXT skips reload for a move.  Newer buffer edits are always preserved."
@@ -144,8 +161,12 @@ KEEP-TEXT skips reload for a move.  Newer buffer edits are always preserved."
       (cond
        (keep-text (read-only-mode (if (file-writable-p file) -1 1)))
        ((or (buffer-modified-p) (/= (buffer-chars-modified-tick) (nth 2 snapshot)))
-        (message "P4 finished; kept newer buffer text in %s" (buffer-name))
-        (set-buffer-modified-p t))
+        ;; Auto-revert can load P4's result before the process callback runs.
+        ;; A changed character tick alone does not imply unsaved user edits.
+        (if (and (not (buffer-modified-p)) (vc-p4--buffer-matches-file-p file))
+            (read-only-mode (if (file-writable-p file) -1 1))
+          (message "P4 finished; kept newer buffer text in %s" (buffer-name))
+          (set-buffer-modified-p t)))
        ((file-exists-p file)
         (progn (revert-buffer t t t)
                (read-only-mode (if (file-writable-p file) -1 1))))

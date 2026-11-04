@@ -164,6 +164,55 @@
         (should-not (vc-p4--operation-for file))
         (should-not (vc-p4--operation-recovery operation))))))
 
+(ert-deftest vc-p4-revert-keeps-buffer-clean-after-an-earlier-reload ()
+  (vc-p4-test-operation
+    (cl-letf (((symbol-function 'vc-p4--stat) (lambda (_) '((action . "edit")))))
+      (vc-revert-file file)
+      (funcall (vc-p4--job-prepare job))
+      (with-temp-file file (insert "reverted\n"))
+      ;; Auto-revert may load the server's result before command completion.
+      (revert-buffer t t t)
+      (should-not (buffer-modified-p))
+      (vc-p4-test-complete-operation job)
+      (should (equal (buffer-string) "reverted\n"))
+      (should-not (buffer-modified-p)))))
+
+(ert-deftest vc-p4-revert-keeps-clean-reload-with-coding-and-narrowing ()
+  (vc-p4-test-operation
+    (setq buffer-file-coding-system 'utf-8-dos)
+    (cl-letf (((symbol-function 'vc-p4--stat) (lambda (_) '((action . "edit")))))
+      (vc-revert-file file)
+      (funcall (vc-p4--job-prepare job))
+      (let ((coding-system-for-write 'utf-8-dos))
+        (with-temp-file file (insert "café\nreverted\n")))
+      (revert-buffer t t t)
+      (narrow-to-region (point-min) (+ (point-min) 4))
+      (let ((undo buffer-undo-list))
+        (vc-p4-test-complete-operation job)
+        (should-not (buffer-modified-p))
+        (should (buffer-narrowed-p))
+        (should (eq undo buffer-undo-list)))
+      (widen)
+      (should (equal (buffer-string) "café\nreverted\n")))))
+
+(ert-deftest vc-p4-revert-retains-changed-text-despite-cleared-modified-flag ()
+  (vc-p4-test-operation
+    (cl-letf (((symbol-function 'vc-p4--stat) (lambda (_) '((action . "edit")))))
+      (vc-revert-file file)
+      (funcall (vc-p4--job-prepare job))
+      (with-temp-file file (insert "original\nreverted tail\n"))
+      (revert-buffer t t t)
+      (goto-char (point-min)) (forward-line 1)
+      (delete-region (point) (point-max)) (insert "newer tail\n")
+      (set-buffer-modified-p nil)
+      ;; Equal text in the visible region is not enough to mark it clean.
+      (narrow-to-region (point-min) (+ (point-min) 8))
+      (vc-p4-test-complete-operation job)
+      (should (buffer-modified-p))
+      (should (buffer-narrowed-p))
+      (widen)
+      (should (equal (buffer-string) "original\nnewer tail\n")))))
+
 (ert-deftest vc-p4-destructive-failure-retains-recoverable-bytes ()
   (dolist (status '(error timeout cancelled))
     (vc-p4-test-operation

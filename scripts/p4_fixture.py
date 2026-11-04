@@ -83,6 +83,7 @@ def run_fixture(args):
                     "ops-edit.txt": b"edit lifecycle\n",
                     "ops-lock.txt": b"exclusive lifecycle\n",
                     "ops-revert.txt": b"revert lifecycle\n",
+                    "ops-auto-revert.txt": b"auto-revert lifecycle\n",
                     "ops-delete.txt": b"delete lifecycle\n",
                     "ops-move.txt": b"move lifecycle\n",
                     "ops-move-fail.txt": b"keep on failure\n",
