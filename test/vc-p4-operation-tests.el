@@ -451,11 +451,87 @@
 
 (ert-deftest vc-p4-registration-preserves-real-git-repository-selection ()
   (vc-p4-test-operation
-    (let ((vc-handled-backends '(Git P4)))
+    (let ((vc-handled-backends '(Git P4)) delegated)
       (vc-file-setprop file 'vc-backend 'Git)
       (cl-letf (((symbol-function 'vc-find-root) (lambda (&rest _) "/git/"))
                 ((symbol-function 'vc-p4-root) (lambda (_) (ert-fail "P4 query in Git registration"))))
-        (should (equal (vc-p4--vc-register #'list) (list (list 'Git (list file)) nil)))))))
+        (vc-p4--vc-register (lambda (&rest args) (setq delegated args)))
+        (should vc-p4--waiting-command)
+        (should-not delegated)
+        (funcall (vc-p4--job-callback job) '(:status success :exit-code 0 :stdout "true\n"))
+        (vc-p4-test-await (lambda () delegated))
+        (should (equal delegated (list (list 'Git (list file)) nil)))))))
+
+(ert-deftest vc-p4-registration-rejects-git-marker-without-a-worktree ()
+  (vc-p4-test-operation
+    (vc-file-setprop file 'vc-backend 'none)
+    (let ((vc-handled-backends '(Git P4)))
+      (cl-letf (((symbol-function 'vc-find-root) (lambda (&rest _) "/git/"))
+                ((symbol-function 'vc-p4-root) (lambda (_) "/workspace/"))
+                ((symbol-function 'vc-p4-registered) (lambda (_) nil)))
+        (vc-p4--vc-register (lambda (&rest _) (ert-fail "Git selected from marker alone")))
+        (should vc-p4--waiting-command)
+        (should (equal (vc-p4--job-command job) '("rev-parse" "--is-inside-work-tree")))
+        (funcall (vc-p4--job-callback job)
+                 '(:status error :exit-code 128 :stderr "fatal: not a git repository"))
+        (vc-p4-test-await (lambda () (equal (nth 2 (vc-p4--job-command job)) "add")))
+        (vc-p4-test-complete-operation job)))))
+
+(ert-deftest vc-p4-registration-cancels-git-discovery-with-command ()
+  (vc-p4-test-operation
+    (let ((vc-handled-backends '(Git P4)))
+      (cl-letf (((symbol-function 'vc-find-root) (lambda (&rest _) "/git/"))
+                ((symbol-function 'vc-p4-root) (lambda (_) (ert-fail "P4 discovery after cancellation"))))
+        (vc-p4--vc-register (lambda (&rest _) (ert-fail "Registration after cancellation")))
+        (should vc-p4--waiting-command)
+        (vc-p4-cancel-operation)
+        (should-not vc-p4--waiting-command)
+        (should (vc-p4--job-done job))
+        (should (eq (plist-get (vc-p4--job-result job) :status) 'cancelled))))))
+
+(ert-deftest vc-p4-registration-git-probe-failure-does-not-add ()
+  (dolist (result '((:status timeout :detail "Git timed out")
+                    (:status error :detail "Git executable missing")
+                    (:status error :exit-code 128 :stderr "fatal: detected dubious ownership in repository")
+                    (:status error :exit-code 128 :stderr "fatal: Permission denied")))
+    (vc-p4-test-operation
+      (let ((vc-handled-backends '(Git P4)))
+        (cl-letf (((symbol-function 'vc-find-root) (lambda (&rest _) "/git/"))
+                  ((symbol-function 'vc-p4-root) (lambda (_) (ert-fail "P4 discovery after failed probe"))))
+          (vc-p4--vc-register (lambda (&rest _) (ert-fail "Registration after failed probe")))
+          (funcall (vc-p4--job-callback job) result)
+          (vc-p4-test-await (lambda () (not vc-p4--waiting-command)))
+          (should (string-match-p "Git discovery failed" vc-p4--operation-error)))))))
+
+(ert-deftest vc-p4-registration-keeps-real-git-directory-and-gitfile ()
+  (require 'vc-git)
+  (dolist (gitfile '(nil t))
+    (vc-p4-test-async
+      (let* ((dir (make-temp-file "vc-p4-git-" t))
+             (worktree (expand-file-name "worktree" dir))
+             (file (expand-file-name "new.txt" worktree))
+             (vc-handled-backends nil))
+        (unwind-protect
+            (progn
+              (should (zerop (apply #'call-process vc-git-program nil nil nil
+                                   (append '("init" "--quiet")
+                                           (when gitfile (list "--separate-git-dir"
+                                                               (expand-file-name "metadata" dir)))
+                                           (list worktree)))))
+              (with-temp-file file (insert "Git contents\n"))
+              (with-current-buffer (find-file-noselect file)
+                (let ((vc-handled-backends '(Git P4)))
+                  (cl-letf (((symbol-function 'vc-p4-root)
+                             (lambda (_) (ert-fail "P4 query inside valid Git worktree"))))
+                    (call-interactively #'vc-register)
+                    (should vc-p4--waiting-command)
+                    (vc-p4-test-await (lambda () (not vc-p4--waiting-command)))
+                    (should-not vc-p4--operation-error)
+                    (should (eq (vc-backend file) 'Git))
+                    (should (zerop (call-process vc-git-program nil nil nil "-C" worktree
+                                                "ls-files" "--error-unmatch" "new.txt")))))))
+          (when-let* ((buffer (get-file-buffer file))) (kill-buffer buffer))
+          (delete-directory dir t))))))
 
 (ert-deftest vc-p4-waiting-command-aborts-after-user-edits ()
   (vc-p4-test-operation

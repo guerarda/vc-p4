@@ -10,10 +10,11 @@
 
 (defvar-local vc-p4--waiting-command nil)
 
-(defun vc-p4--continue-command (files function)
+(defun vc-p4--continue-command (files function &optional cleanup)
   "Run FUNCTION, continuing automatically when FILES' metadata arrives.
 Never replay a mutation: FUNCTION must signal pending only before starting it.
-Abort if the initiating buffer, configuration, disk or buffer text changes."
+Abort if the initiating buffer, configuration, disk or buffer text changes.
+Call CLEANUP once when the pending continuation ends, including cancellation."
   (when vc-p4--waiting-command (user-error "A P4 command is already waiting"))
   (let* ((buffer (current-buffer))
          (contexts (mapcar #'vc-p4--context files))
@@ -25,7 +26,11 @@ Abort if the initiating buffer, configuration, disk or buffer text changes."
         ((cancel ()
            (when timer (cancel-timer timer))
            (when (buffer-live-p buffer)
-             (with-current-buffer buffer (setq vc-p4--waiting-command nil))))
+             (with-current-buffer buffer (setq vc-p4--waiting-command nil)))
+           (when cleanup
+             (let ((function cleanup))
+               (setq cleanup nil)
+               (funcall function))))
          (step ()
            (when (buffer-live-p buffer)
              (with-current-buffer buffer
@@ -334,28 +339,60 @@ Changing to REVISION is a sync operation and is not implemented here."
 (defvar vc-p4--inferred-registration nil
   "Non-nil when the current next-action may pass an inferred registration backend.")
 
+(defvar vc-git-program)
+
 (defun vc-p4--vc-register (original &optional fileset comment)
   "Register P4 FILESET asynchronously, delegating ORIGINAL for other backends."
   (if (and (or (null fileset)
                (and vc-p4--inferred-registration
                     (equal (cadr fileset) (list buffer-file-name))))
-           buffer-file-name (memq 'P4 vc-handled-backends)
-           (not (vc-find-root buffer-file-name ".git")))
-      (let ((file buffer-file-name))
+           buffer-file-name (memq 'P4 vc-handled-backends))
+      (let* ((file buffer-file-name)
+             (git-marker (vc-find-root file ".git"))
+             git-job git-result)
         (vc-buffer-sync)
         ;; A cached/inferred Git backend is not evidence of a Git repository.
-        ;; Resolve the P4 mapping before allowing generic backend selection.
+        ;; Nor is a stray .git marker: ask Git before giving it precedence.
         (vc-p4--continue-command
          (list file)
          (lambda ()
            (let ((vc-p4-status nil)
                  (vc-p4--inferred-registration nil))
-             (cond ((vc-p4-root file)
+             (when git-marker
+               (unless git-job
+                 (require 'vc-git)
+                 (let ((vc-p4-program vc-git-program)
+                       (process-environment (cons "LC_ALL=C" process-environment)))
+                   (setq git-job
+                         (vc-p4--run-async
+                          (file-name-directory file)
+                          (lambda (result) (setq git-result result))
+                          "rev-parse" "--is-inside-work-tree"))))
+               (unless git-result (signal 'vc-p4-pending nil))
+               ;; Git also uses exit 128 for access and ownership failures.
+               ;; Only a rejected marker is evidence to try P4 instead.
+               (unless (or (eq (plist-get git-result :status) 'success)
+                           (and (eq (plist-get git-result :status) 'error)
+                                (eq (plist-get git-result :exit-code) 128)
+                                (string-match-p
+                                 "not a git repository\\|invalid gitfile format\\|no path in gitfile"
+                                 (or (plist-get git-result :stderr) ""))))
+                 (signal 'vc-p4-error
+                         (list "Git discovery failed"
+                               (or (plist-get git-result :detail)
+                                   (plist-get git-result :stderr))))))
+             (cond ((and git-result
+                         (eq (plist-get git-result :status) 'success)
+                         (equal (string-trim (plist-get git-result :stdout)) "true"))
+                    (funcall original (or fileset (list 'Git (list file))) comment))
+                   ((vc-p4-root file)
                     (vc-p4--vc-register original (list 'P4 (list file)) comment))
                    ((eq vc-p4-status 'pending) (signal 'vc-p4-pending nil))
                    ((eq vc-p4-status 'error)
                     (signal 'vc-p4-error (list vc-p4-last-error)))
-                   (t (funcall original nil comment)))))))
+                   (t (funcall original nil comment)))))
+         (lambda ()
+           (when (and git-job (not git-result)) (vc-p4--cancel git-job)))))
   (let ((fileset (or fileset (vc-deduce-fileset nil t))))
     (if (not (eq (car fileset) 'P4))
         (funcall original fileset comment)

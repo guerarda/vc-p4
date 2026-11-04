@@ -9,9 +9,9 @@ Validate other environments using the workspace smoke check.
 ## Checks
 
 - Warning-free byte compilation.
-- 81 backend/process/operation tests; 105 total including three real diff-hl
+- 85 backend/process/operation tests; 109 total including three real diff-hl
   consumer tests, nine incremental-rendering tests and twelve fault/input tests.
-- 25 disposable-server tests covering actual metadata, byte retrieval, state,
+- 26 disposable-server tests covering actual metadata, byte retrieval, state,
   mappings, native file operations and nine gutter scenarios. Run against both
   case-sensitive and case-insensitive servers; the alias-case assertion applies
   only to the latter.
@@ -144,3 +144,9 @@ registration/revert through native commands.
 Saved-file registration is exercised through both `vc-register` and
 `vc-next-action`.  An inferred fileset from the latter still resolves the P4
 mapping; an explicitly selected backend retains its normal registration path.
+When a `.git` marker is present, a read-only asynchronous Git probe verifies
+that it identifies a working tree before delegating registration.  A rejected
+marker permits P4 mapping discovery; probe timeouts or launch failures stop the
+command.  Cancelling the waiting command also cancels its Git probe.  Tests
+cover real Git directories and gitfiles, and native P4 registration beneath
+empty `.git` directories and invalid gitfiles.
