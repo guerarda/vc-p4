@@ -9,9 +9,9 @@ Validate other environments using the workspace smoke check.
 ## Checks
 
 - Warning-free byte compilation.
-- 79 backend/process/operation tests; 103 total including three real diff-hl
+- 81 backend/process/operation tests; 105 total including three real diff-hl
   consumer tests, nine incremental-rendering tests and twelve fault/input tests.
-- 24 disposable-server tests covering actual metadata, byte retrieval, state,
+- 25 disposable-server tests covering actual metadata, byte retrieval, state,
   mappings, native file operations and nine gutter scenarios. Run against both
   case-sensitive and case-insensitive servers; the alias-case assertion applies
   only to the latter.
@@ -141,3 +141,6 @@ continuation. It waits only for preflight data, never retries a mutation, and
 cancels on changed text, disk identity, configuration or buffer closure. Tests
 cover inferred Git metadata versus real Git roots and automatic cold-cache
 registration/revert through native commands.
+Saved-file registration is exercised through both `vc-register` and
+`vc-next-action`.  An inferred fileset from the latter still resolves the P4
+mapping; an explicitly selected backend retains its normal registration path.

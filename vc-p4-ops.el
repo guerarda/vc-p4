@@ -331,9 +331,15 @@ Changing to REVISION is a sync operation and is not implemented here."
   (mapcar (lambda (file) (vc-p4--operate "add" (list file) (list "add" "-f" file)))
           files))
 
+(defvar vc-p4--inferred-registration nil
+  "Non-nil when the current next-action may pass an inferred registration backend.")
+
 (defun vc-p4--vc-register (original &optional fileset comment)
   "Register P4 FILESET asynchronously, delegating ORIGINAL for other backends."
-  (if (and (null fileset) buffer-file-name (memq 'P4 vc-handled-backends)
+  (if (and (or (null fileset)
+               (and vc-p4--inferred-registration
+                    (equal (cadr fileset) (list buffer-file-name))))
+           buffer-file-name (memq 'P4 vc-handled-backends)
            (not (vc-find-root buffer-file-name ".git")))
       (let ((file buffer-file-name))
         (vc-buffer-sync)
@@ -342,7 +348,8 @@ Changing to REVISION is a sync operation and is not implemented here."
         (vc-p4--continue-command
          (list file)
          (lambda ()
-           (let ((vc-p4-status nil))
+           (let ((vc-p4-status nil)
+                 (vc-p4--inferred-registration nil))
              (cond ((vc-p4-root file)
                     (vc-p4--vc-register original (list 'P4 (list file)) comment))
                    ((eq vc-p4-status 'pending) (signal 'vc-p4-pending nil))
@@ -363,7 +370,10 @@ Changing to REVISION is a sync operation and is not implemented here."
 (defun vc-p4--vc-next-action (original verbose)
   "Open an unopened P4 file for edit before offering a check-in workflow."
   (if (not (and buffer-file-name (eq (vc-backend buffer-file-name) 'P4)))
-      (funcall original verbose)
+      ;; The generic frontend passes its inferred backend explicitly to
+      ;; `vc-register'.  It is not a user choice unless VERBOSE was requested.
+      (let ((vc-p4--inferred-registration (not verbose)))
+        (funcall original verbose))
     (when verbose (user-error "Use p4 sync to change revisions"))
     (let ((file buffer-file-name))
       (vc-p4--continue-command
