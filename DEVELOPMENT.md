@@ -1,8 +1,10 @@
 # Development and validation
 
 The backend is tested with Emacs 30.2 and 31.1 on macOS arm64,
-P4/P4D 2024.2/3084003, and diff-hl 1.10.0 at
-`2d7d0714d9637f54af672987c65b6973b31e56a2`. The minimum requirement remains
+P4/P4D 2024.2/3084003, and diff-hl 1.11.2 at
+`8dfb5c27ea43b8c7ac1c008bb97090ad4f059285`. Earlier gutter validation used
+diff-hl 1.10.0 at `2d7d0714d9637f54af672987c65b6973b31e56a2`.
+The minimum requirement remains
 Emacs 30.1; that exact patch release has not been run.
 Validate other environments using the workspace smoke check.
 
