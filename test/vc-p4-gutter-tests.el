@@ -67,7 +67,7 @@
 			  (setq buffer-file-name file)
 			  (let ((diff-hl-mode t) callbacks)
 			    (cl-letf (((symbol-function 'diff-hl-changes) (lambda () '((:working . "pending"))))
-				      ((symbol-function 'diff-hl--resolve)
+				      ((symbol-function 'vc-p4-gutter--resolve)
 				       (lambda (value cb) (if (listp value) (funcall cb value) (push cb callbacks)))))
 			      (vc-p4-gutter--update)
 			      (vc-p4-gutter--update)
@@ -94,8 +94,8 @@
               (setq process (make-process :name "p4-test-diff" :buffer output
                                           :command '("cat") :connection-type 'pipe
                                           :noquery t :sentinel #'ignore))
-              ;; Isolate acquisition, but use diff-hl's real asynchronous
-              ;; resolver, diff parser and process completion callback.
+              ;; Isolate acquisition, but use native asynchronous completion
+              ;; and diff-hl's real parser.
               (cl-letf (((symbol-function 'diff-hl-changes)
                          (lambda () `((:working . ,output)))))
                 (vc-p4-gutter--update))
@@ -133,6 +133,37 @@
             (should (= calls 1)))
         (vc-file-clearprops file)))))
 
+(ert-deftest vc-p4-gutter-closed-output-ignores-late-success-sentinel ()
+  (vc-p4-test-with-file "one\nchanged\n"
+    (with-temp-buffer
+      (setq buffer-file-name file)
+      (setq-local diff-hl-mode t)
+      (let* ((output (generate-new-buffer " *p4-closed-output*"))
+             (process (make-process :name "p4-closed-output" :buffer output
+                                    :command '("cat") :connection-type 'pipe
+                                    :noquery t :sentinel #'ignore)))
+        (unwind-protect
+            (progn
+              (cl-letf (((symbol-function 'diff-hl-changes)
+                         (lambda () `((:working . ,output)))))
+                (vc-p4-gutter--update))
+              ;; The diff is complete but its successful exit event has not
+              ;; reached the consumer when a save/refresh closes the output.
+              (let ((sentinel (process-sentinel process)))
+                (set-process-sentinel process #'ignore)
+                (process-send-eof process)
+                (vc-p4-test-await (lambda () (eq (process-status process) 'exit)))
+                (kill-buffer output)
+                ;; A replacement with the same name must not be read either.
+                (setq output (generate-new-buffer " *p4-closed-output*"))
+                (cl-letf (((symbol-function 'diff-hl-changes-from-buffer)
+                           (lambda (&rest _) (ert-fail "Parsed obsolete diff")))
+                          ((symbol-function 'vc-p4-gutter--reconcile)
+                           (lambda (&rest _) (ert-fail "Rendered obsolete diff"))))
+                  (funcall sentinel process "finished\n"))))
+          (when (process-live-p process) (delete-process process))
+          (when (buffer-live-p output) (kill-buffer output)))))))
+
 (provide 'vc-p4-gutter-tests)
 
 (ert-deftest vc-p4-gutter-disabled-mode-cleans-up-and-rejects-late-result ()
@@ -144,7 +175,7 @@
       (let ((diff-hl-mode t) callback)
         (vc-p4-gutter--reconcile '((2 1 1 change)) nil)
         (cl-letf (((symbol-function 'diff-hl-changes) (lambda () '((:working . "pending"))))
-                  ((symbol-function 'diff-hl--resolve)
+                  ((symbol-function 'vc-p4-gutter--resolve)
                    (lambda (value cb) (if (listp value) (funcall cb value) (setq callback cb)))))
           (vc-p4-gutter--update)
           (setq diff-hl-mode nil)

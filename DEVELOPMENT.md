@@ -11,8 +11,8 @@ Validate other environments using the workspace smoke check.
 ## Checks
 
 - Warning-free byte compilation.
-- 94 backend/process/operation tests; 123 total including seven real diff-hl
-  consumer tests, nine incremental-rendering tests and thirteen fault/input tests.
+- 94 backend/process/operation tests; 124 total including seven real diff-hl
+  consumer tests, ten incremental-rendering tests and thirteen fault/input tests.
 - 28 disposable-server tests covering actual metadata, byte retrieval, state,
   mappings, native file operations and ten gutter scenarios. Run against both
   case-sensitive and case-insensitive servers; the alias-case assertion applies
@@ -95,6 +95,11 @@ Pending and error states retain the last display, with mode-line status. A clean
 result removes obsolete markers. Mode disable and workspace changes invalidate
 the old display. The save regression checks overlay identity through completion,
 not merely during the pending interval, with flydiff both enabled and disabled.
+P4 gutter results use native VC completion on both supported Emacs versions.
+A successful process exit delivered after its output buffer closes is discarded,
+including when a new buffer has reused the output's name. This ordering has a
+deterministic regression test; it previously caused a deleted-buffer sentinel
+error during a save-triggered refresh on Emacs 30.2.
 
 `diff-hl-show-hunk` uses the same asynchronous P4 diff pipeline for saved and
 unsaved text.  Its normal inline viewer receives a completed diff, rather than

@@ -7,6 +7,7 @@
 
 ;;; Code:
 (require 'cl-lib)
+(require 'vc-dispatcher)
 (defvar vc-p4--generation)
 (defvar diff-hl-mode)
 (defvar diff-hl-side)
@@ -21,7 +22,7 @@
 (declare-function vc-p4--file-stamp "vc-p4")
 (declare-function vc-p4--diff-valid-p "vc-p4")
 (declare-function diff-hl-changes "diff-hl")
-(declare-function diff-hl--resolve "diff-hl")
+(declare-function diff-hl-changes-from-buffer "diff-hl")
 (declare-function diff-hl-adjust-changes "diff-hl")
 (declare-function diff-hl--autohide-margin "diff-hl")
 (declare-function vc-p4--diff-async "vc-p4")
@@ -169,6 +170,23 @@ win where reference and working changes overlap, as in diff-hl."
     (when (and (null desired) obsolete)
       (let ((diff-hl-side (vc-p4-gutter--side))) (diff-hl--autohide-margin)))))
 
+(defun vc-p4-gutter--resolve (value callback)
+  "Resolve P4 changes VALUE without reading a closed output buffer.
+Use native VC completion on every supported Emacs version."
+  (if (listp value) (funcall callback value)
+    (let ((buffer (get-buffer value)))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (let ((process (get-buffer-process buffer)))
+            (vc-exec-after
+             (lambda ()
+               (when (and (buffer-live-p buffer)
+                          (or (null process)
+                              (and (eq (process-status process) 'exit)
+                                   (zerop (process-exit-status process)))))
+                 (funcall callback (diff-hl-changes-from-buffer buffer))))
+             process)))))))
+
 (defun vc-p4-gutter--update ()
   "Resolve a current diff and commit it once through the incremental renderer."
   (let* ((source (current-buffer))
@@ -186,10 +204,10 @@ win where reference and working changes overlap, as in diff-hl."
                                 (when-let* ((buffer (and (not (listp value)) (get-buffer value))))
                                   (buffer-local-value 'vc-p4--diff-owner-task buffer)))
                               (list working reference)))))
-    (diff-hl--resolve
+    (vc-p4-gutter--resolve
      working
      (lambda (work)
-       (diff-hl--resolve
+       (vc-p4-gutter--resolve
         reference
         (lambda (ref)
           (when (buffer-live-p source)
