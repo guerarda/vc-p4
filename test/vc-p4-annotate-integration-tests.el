@@ -1,0 +1,72 @@
+;;; vc-p4-annotate-integration-tests.el --- Actual line attribution -*- lexical-binding: t; -*-
+(require 'vc-p4-integration-tests)
+(require 'vc-p4-history)
+(require 'vc-p4-annotate)
+
+(ert-deftest vc-p4-real-annotation-move-origin-and-native-revision-navigation ()
+  (let* ((file (vc-p4-integration-file "history-moved.txt"))
+         (source (find-file-noselect file))
+         (bytes (vc-p4--local-bytes file)) buffers)
+    (save-window-excursion
+      (unwind-protect
+          (progn
+            (switch-to-buffer source)
+            (let ((inhibit-read-only t)) (goto-char (point-min)) (insert "unsaved\n"))
+            (vc-annotate file nil nil nil nil 'P4)
+            (set-buffer (window-buffer (selected-window)))
+            (push (current-buffer) buffers)
+            (vc-p4-integration-drain)
+            (should (eq major-mode 'vc-annotate-mode))
+            (should buffer-read-only)
+            (font-lock-ensure)
+            (goto-char (point-min))
+            (should (equal (car (vc-annotate-extract-revision-at-line)) "//depot/history-moved.txt#1"))
+            (let ((vc-p4-metadata-ttl -1))
+              (vc-annotate-prev-revision 1))
+            (vc-p4-integration-drain)
+            (should (equal vc-buffer-revision "//depot/history-branch.txt#1"))
+            (vc-annotate-next-revision 1)
+            (vc-p4-integration-drain)
+            (should (equal vc-buffer-revision "//depot/history-moved.txt#1"))
+            (goto-char (point-min))
+            (forward-line 1)
+            (should (equal (car (vc-annotate-extract-revision-at-line)) "//depot/history-source.txt#1"))
+            (should (string-match-p "alice .* | shared original" (thing-at-point 'line t)))
+            (vc-annotate-find-revision-at-line)
+            (push (current-buffer) buffers)
+            (vc-p4-integration-drain)
+            (should (equal (buffer-string) "history one\nshared original\n"))
+            (should-not buffer-file-name)
+            (with-current-buffer source
+              (should (string-prefix-p "unsaved\n" (buffer-string)))
+              (should (buffer-modified-p)))
+            (should (equal (vc-p4--local-bytes file) bytes)))
+        (dolist (buffer buffers) (when (buffer-live-p buffer) (kill-buffer buffer)))
+        (with-current-buffer source (set-buffer-modified-p nil))
+        (kill-buffer source)))))
+
+(ert-deftest vc-p4-real-annotation-author-and-have-baseline ()
+  (dolist (name '("history-source.txt" "sample.txt"))
+    (let* ((file (vc-p4-integration-file name))
+           (source (find-file-noselect file)) output)
+      (save-window-excursion
+        (unwind-protect
+            (progn
+              (switch-to-buffer source)
+              (vc-annotate file nil nil nil nil 'P4)
+              (setq output (window-buffer (selected-window)))
+              (vc-p4-integration-drain)
+              (with-current-buffer output
+                (goto-char (point-min))
+                (if (equal name "history-source.txt")
+                    (progn
+                      (should (string-match-p "history-source.txt#2 .* bob .* | history two" (thing-at-point 'line t)))
+                      (forward-line 1)
+                      (should (string-match-p "history-source.txt#1 .* alice .* | shared original" (thing-at-point 'line t))))
+                  (should (equal vc-buffer-revision "//depot/sample.txt#1"))
+                  (should (string-match-p " | two\n" (buffer-string)))
+                  (should-not (string-match-p "new depot line" (buffer-string))))))
+          (when (buffer-live-p output) (kill-buffer output))
+          (kill-buffer source))))))
+
+(provide 'vc-p4-annotate-integration-tests)

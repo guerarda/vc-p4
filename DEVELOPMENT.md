@@ -11,9 +11,9 @@ Validate other environments using the workspace smoke check.
 ## Checks
 
 - Warning-free byte compilation.
-- 114 backend/process/operation/history tests; 146 total including seven real diff-hl
+- 122 backend/process/operation/history/annotation tests; 154 total including seven real diff-hl
   consumer tests, ten incremental-rendering tests and fifteen fault/input tests.
-- 30 disposable-server tests covering actual metadata, byte retrieval, state,
+- 32 disposable-server tests covering actual metadata, byte retrieval, state,
   mappings, native file operations and ten gutter scenarios. Run against both
   case-sensitive and case-insensitive servers; the alias-case assertion applies
   only to the latter.
@@ -58,6 +58,14 @@ input, then checks the new HAVE revision and preservation of unsaved text.
 Operation regressions also exercise queued preparation, live-worker input,
 timeout/cancellation, overlapping files, recovery copies, save guards, newer
 buffer text, backend/configuration changes and fresh-process autoloading.
+Active workers also receive a bounded local process-state check. This settles
+completed processes whose terminal notification was missed, while retaining
+full stdout/stderr and the original deadline. It issues no P4 queries and never
+replays a command. Regressions suppress both stream notifications and retain a
+late stderr writer. A real Emacs 30.2 revert run reproduced a false timeout
+after the process had exited successfully with both streams closed; the corrected
+runner passes that server test. The forced file-notify ordering also sets the
+notification flag exactly as the native callback does.
 
 On macOS arm64, Emacs 30.2 and 31.1 passed these tests. Observed queued-command
 latencies were below 10 ms in the local test runs with 600 ms worker delays.
@@ -78,7 +86,16 @@ displayed filelog ancestry, skipping entries without content. Submitted-change
 lists and descriptions share the same view lifecycle and link to affected-file
 contents, including files outside the original file's ancestry. Refresh preserves
 buffer-local P4 configuration across major-mode initialization. Pending
-changelist management, directory logs and annotation remain separate work.
+changelist management and directory logs remain separate work.
+
+`vc-p4-annotate.el` uses tagged `annotate -I -u` source chains for exact line
+origins. It labels file revisions and changelists separately and uses originating
+revision timestamps for native age colors. Default annotation targets HAVE.
+Native reannotation clears local variables, so an internal snapshot preserves
+displayed ancestry and workspace context through previous/next navigation.
+Tests cover two authors, retained lines through a branch and move, native line
+revision lookup, expired metadata, queued input, empty text and binary rejection.
+Broader comparisons and Ediff are the remaining investigation work.
 
 The diff-hl source is unchanged. Backend acquisition remains in `vc-p4.el`;
 `vc-p4-gutter.el` handles completed-result validation and incremental display.

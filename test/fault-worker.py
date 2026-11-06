@@ -16,10 +16,15 @@ if mode in {"auth", "outage"}:
 args = [arg for arg in sys.argv[1:] if arg not in {"-Mj", "-ztag"}]
 if args and args[0] in {"edit", "add", "revert", "delete", "sync"}:
     print(json.dumps({"action": args[0], "clientFile": args[-1]}))
-elif args and args[0] in {"fstat", "where", "info", "client", "print", "filelog"}:
+elif args and args[0] in {"fstat", "where", "info", "client", "print", "filelog", "annotate"}:
     command = args[0]
     if command == "print":
         sys.stdout.buffer.write(b"one\ntwo\nthree\n")
+    elif command == "annotate":
+        print(json.dumps({"depotFile": "//test/file", "rev": "1", "type": "text"}))
+        for line in ("one\n", "two\n", "three\n"):
+            print(json.dumps({"depotFile0": "//test/file", "lower0": "1", "lower": "17",
+                              "upper": "17", "user": "alice", "data": line}))
     else:
         record = {
             "fstat": {"clientFile": args[-1], "depotFile": "//test/file", "haveRev": "1", "headRev": "1"},

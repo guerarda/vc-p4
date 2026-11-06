@@ -30,6 +30,7 @@ mutation has finished, explicitly reload the backend and its companion modules:
 (load-file "/path/to/p4vc/vc-p4-ops.el")
 (load-file "/path/to/p4vc/vc-p4-gutter.el")
 (load-file "/path/to/p4vc/vc-p4-history.el")
+(load-file "/path/to/p4vc/vc-p4-annotate.el")
 ```
 
 ## Five-minute check
@@ -93,6 +94,12 @@ details. Revert only the disposable edit after checking.
    one. Check the description and affected-file actions, then follow a file
    revision link. `M-x vc-p4-describe-change` also accepts `@number` directly.
    Verify that `g` refreshes these views using the same workspace context.
+6. Run `C-x v g` on a tracked text file. Check known line authors and dates;
+   `f` should open the exact originating revision, `l` its log and `C-c C-d`
+   its submitted changelist. Use annotation's `p`/`n` to navigate and return.
+   The initial target is HAVE, including when depot head is newer. Do not
+   manufacture production history just for attribution: the fixture covers
+   multiple authors and submitted branch/move ancestry.
 
 ## Native editing lifecycle
 

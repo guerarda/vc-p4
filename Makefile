@@ -6,9 +6,9 @@ DIFF_HL_DIR ?=
 .PHONY: check compile test test-diff-hl test-flycheck integration clean
 check: compile test
 compile:
-	$(EMACS) -Q --batch -L . --eval '(setq byte-compile-error-on-warn t)' -f batch-byte-compile vc-p4.el vc-p4-ops.el vc-p4-gutter.el vc-p4-history.el
+	$(EMACS) -Q --batch -L . --eval '(setq byte-compile-error-on-warn t)' -f batch-byte-compile vc-p4.el vc-p4-ops.el vc-p4-gutter.el vc-p4-history.el vc-p4-annotate.el
 test:
-	$(EMACS) -Q --batch --eval '(setq load-prefer-newer t)' -L . -L test -l vc-p4-operation-tests -l vc-p4-history-tests -f ert-run-tests-batch-and-exit
+	$(EMACS) -Q --batch --eval '(setq load-prefer-newer t)' -L . -L test -l vc-p4-operation-tests -l vc-p4-history-tests -l vc-p4-annotate-tests -f ert-run-tests-batch-and-exit
 test-diff-hl:
 	@test -n "$(DIFF_HL_DIR)" || (echo 'Set DIFF_HL_DIR to a diff-hl checkout'; exit 1)
 	$(EMACS) -Q --batch --eval '(setq load-prefer-newer t)' -L . -L test -L '$(DIFF_HL_DIR)' -l vc-p4-responsive-tests -f ert-run-tests-batch-and-exit
@@ -18,4 +18,4 @@ test-flycheck:
 integration:
 	$(PYTHON) scripts/p4_fixture.py --emacs '$(EMACS)'
 clean:
-	rm -f vc-p4.elc vc-p4-ops.elc vc-p4-gutter.elc vc-p4-history.elc
+	rm -f vc-p4.elc vc-p4-ops.elc vc-p4-gutter.elc vc-p4-history.elc vc-p4-annotate.elc

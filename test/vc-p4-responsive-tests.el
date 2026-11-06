@@ -2,6 +2,7 @@
 (require 'vc-p4-gutter-tests)
 (require 'vc-p4-operation-tests)
 (require 'vc-p4-history-tests)
+(require 'vc-p4-annotate-tests)
 (defconst vc-p4-test-worker
   (expand-file-name "fault-worker.py" (file-name-directory load-file-name)))
 (defvar vc-p4-test-command nil)
@@ -55,27 +56,37 @@
            (vc-file-clearprops file))))))
 
 (ert-deftest vc-p4-input-history-and-revision-views-do-not-block ()
-  (dolist (revision '(nil t))
+  (dolist (view '(history revision annotation))
     (vc-p4-test-faults
       (save-window-excursion
         (find-file file)
+        (when (eq view 'annotation)
+          ;; Emacs 30's frontend requires discovered VC ownership even when an
+          ;; explicit backend is supplied.  Keep history/annotation caches cold.
+          (vc-p4-test-await (lambda () (eq (vc-backend file) 'P4))))
         (let ((source (current-buffer)) output)
           (unwind-protect
               (progn
                 (setenv "VC_P4_FAULT_DELAY" "0.6")
                 (vc-p4-test-queued-input
                  (lambda ()
-                   (if revision
-                       (setq output (vc-find-revision file "//test/file#1" 'P4))
-                     (vc-print-log-internal 'P4 (list file) nil nil 10)
-                     (setq output (get-buffer "*vc-change-log*")))
+                   (pcase view
+                     ('revision (setq output (vc-find-revision file "//test/file#1" 'P4)))
+                     ('annotation
+                      (vc-annotate file "1" nil nil nil 'P4)
+                      (setq output (window-buffer (selected-window))))
+                     (_ (vc-print-log-internal 'P4 (list file) nil nil 10)
+                        (setq output (get-buffer "*vc-change-log*"))))
                    (switch-to-buffer source)))
                 (should vc-p4-history--tasks)
                 (vc-p4-test-await (lambda () (null vc-p4-history--tasks)))
                 (should (string-prefix-p "typed" (buffer-string)))
                 (with-current-buffer output
                   (should buffer-read-only)
-                  (should (string-match-p (if revision "one\ntwo\nthree\n" "Changelist: @17")
+                  (should (string-match-p (pcase view
+                                            ('revision "one\ntwo\nthree\n")
+                                            ('annotation "//test/file#1 @17 alice")
+                                            (_ "Changelist: @17"))
                                           (buffer-string)))))
             (when (buffer-live-p output) (kill-buffer output))))))))
 

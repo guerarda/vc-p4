@@ -92,7 +92,7 @@ def run_fixture(args):
                     "stale.txt": b"original\n",
                     "café.txt": b"unicode path\n",
                     "gutter.txt": b"one\ntwo\nthree\n",
-                    "history-source.txt": b"history one\n",
+                    "history-source.txt": b"history one\nshared original\n",
                     "opened.txt": b"unchanged\n",
                     "unopened.txt": b"original\n",
                     "missing.txt": b"missing later\n",
@@ -116,14 +116,17 @@ def run_fixture(args):
                 p4run("submit", "-d", "fixture: initial contents")
                 # Submitted move/integration ancestry, independent of lifecycle files.
                 history_source = root / "alice" / "history-source.txt"
-                p4run("edit", str(history_source))
-                history_source.write_bytes(b"history two\n")
-                p4run("submit", "-d", "fixture: history second revision\n\nfull description")
+                p4run("sync", "//depot/history-source.txt", user="bob")
+                bob_history = root / "bob" / "history-source.txt"
+                p4run("edit", str(bob_history), user="bob")
+                bob_history.write_bytes(b"history two\nshared original\n")
+                p4run("submit", "-d", "fixture: history second revision\n\nfull description", user="bob")
+                p4run("sync", str(history_source))
                 history_branch = root / "alice" / "history-branch.txt"
                 p4run("integrate", str(history_source), str(history_branch))
                 p4run("submit", "-d", "fixture: branch history")
                 p4run("edit", str(history_branch))
-                history_branch.write_bytes(b"branch edit\n")
+                history_branch.write_bytes(b"branch edit\nshared original\n")
                 history_moved = root / "alice" / "history-moved.txt"
                 p4run("move", str(history_branch), str(history_moved))
                 p4run("submit", "-d", "fixture: move edited history")
@@ -162,7 +165,7 @@ def run_fixture(args):
                               if args.diff_hl_dir else [])
                 subprocess.run(
                     [emacs, "-Q", "--batch", "--eval", "(setq load-prefer-newer t)", "-L", str(REPO), "-L", str(REPO / "test"),
-                     "-l", "vc-p4-integration-tests", "-l", "vc-p4-history-integration-tests", *extra_args, "-f", "ert-run-tests-batch-and-exit"],
+                     "-l", "vc-p4-integration-tests", "-l", "vc-p4-history-integration-tests", "-l", "vc-p4-annotate-integration-tests", *extra_args, "-f", "ert-run-tests-batch-and-exit"],
                     cwd=root, env=test_env, check=True, timeout=60)
             finally:
                 process.terminate()

@@ -24,6 +24,8 @@ history and read-only revision navigation are also available.
 - Native VC file operations with deferred buffer updates and failure recovery.
 - Native file history, revision completion and read-only revision buffers,
   including submitted move and integration ancestry.
+- Native line annotation with author/date, exact source revisions and
+  changelist navigation through branch, move and integration history.
 
 ## Requirements
 
@@ -98,6 +100,7 @@ Use `M-x diff-hl-next-hunk` and `M-x diff-hl-previous-hunk` to navigate changes.
 | View a revision | `C-x v ~` (`vc-revision-other-window`) |
 | Submitted changes affecting this file | `M-x vc-p4-changes` |
 | Describe a submitted changelist | `M-x vc-p4-describe-change` |
+| Annotate the synced revision | `C-x v g` (`vc-annotate`) |
 | Cancel this file's operation | `M-x vc-p4-cancel-operation` |
 
 In the history buffer, `n` and `p` move between entries; `f` opens the entry's
@@ -109,6 +112,10 @@ background and do not sync, checkout or replace working-file text.
 The changelist links in file history open a submitted-change description.
 Use TAB/RET in submitted-change views to open affected-file revisions; deleted
 files are identified as having no content. `g` refreshes the current view.
+In annotation, `f` opens a line's originating file revision, `l` shows its log,
+and `C-c C-d` describes its originating changelist. Native annotation's `p`/`n`
+commands browse older/newer revisions. The default is the file's HAVE revision;
+unsaved working edits remain intact.
 
 Commands return while P4 runs. Checkout, registration and interactive revert
 continue automatically when required metadata arrives. Editing the initiating

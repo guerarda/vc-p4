@@ -232,7 +232,10 @@
 
 (defun vc-p4-history--adjacent (file revision offset)
   "Return FILE's displayed ancestor next to REVISION by OFFSET."
-  (let* ((rows (if file (vc-p4-history--entries file) vc-p4-history--entries))
+  (let* ((rows (if (and vc-p4-history--entries
+                        (or (null file) (equal file vc-p4-history--file)))
+                   vc-p4-history--entries
+                 (when file (vc-p4-history--entries file))))
          (identity (if (string-prefix-p "//" revision) revision
                      (concat (plist-get (car rows) :depot) "#"
                              (string-remove-prefix "#" revision))))
@@ -298,8 +301,9 @@
   (cond
    ((string-match-p "\\`//[^\n\r]+#[0-9]+\\'" revision) revision)
    ((or (equal revision "") (equal revision "#have"))
-    (vc-p4-history--target file (or (vc-p4-working-revision file)
-                                    (signal 'vc-p4-pending (list file))) rows))
+    (let* ((vc-p4-status nil) (working (vc-p4-working-revision file)))
+      (when (eq vc-p4-status 'error) (signal 'vc-p4-error (list vc-p4-last-error)))
+      (vc-p4-history--target file (or working (signal 'vc-p4-pending (list file))) rows)))
    ((equal revision "#head") (plist-get (car rows) :identity))
    ((string-prefix-p "@" revision)
     (plist-get (car (vc-p4-history--entries file revision 1)) :identity))
