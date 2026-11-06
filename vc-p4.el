@@ -30,7 +30,7 @@
   :type 'natnum)
 (cl-defstruct (vc-p4--job (:constructor vc-p4--make-job))
   directory command environment exec-path callback timeout
-  process stderr-process output errors timer result done prepare)
+  process stderr-process output errors timer result done prepare deadline)
 (defvar vc-p4--queue nil)
 (defvar vc-p4--active nil)
 (defvar vc-p4--dispatch-timer nil)
@@ -87,6 +87,18 @@ Release all resources before delivering the result to its callback."
                                 (zerop (process-exit-status process)))
                                'success 'error)))))
 
+(defun vc-p4--check-job (job)
+  "Settle completed JOB even if a terminal notification was missed.
+Check local process states without waiting or issuing another P4 command."
+  (unless (vc-p4--job-done job)
+    (vc-p4--completed job)
+    (unless (vc-p4--job-done job)
+      (let ((remaining (- (vc-p4--job-deadline job) (float-time))))
+        (if (<= remaining 0)
+            (vc-p4--finish job 'timeout "P4 timed out; check connection/login")
+          (setf (vc-p4--job-timer job)
+                (run-at-time (min 0.05 remaining) nil #'vc-p4--check-job job)))))))
+
 (defun vc-p4--start (job)
   "Start JOB with the environment captured at submission."
   (push job vc-p4--active)
@@ -118,11 +130,8 @@ Release all resources before delivering the result to its callback."
           (error (when (process-live-p (vc-p4--job-process job))
                    (signal (car eof-error) (cdr eof-error)))))
         (unless (vc-p4--job-done job)
-          (setf (vc-p4--job-timer job)
-                (run-at-time (vc-p4--job-timeout job) nil
-                             #'vc-p4--finish job 'timeout
-                             "P4 timed out; check connection/login"))
-          (vc-p4--completed job))))
+          (setf (vc-p4--job-deadline job) (+ (float-time) (vc-p4--job-timeout job)))
+          (vc-p4--check-job job))))
     (quit (vc-p4--finish job 'cancelled "P4 command cancelled before execution"))
     (error (vc-p4--finish job 'error (error-message-string err)))))
 

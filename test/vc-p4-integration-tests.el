@@ -152,6 +152,9 @@
                        ;; Deterministically exercise the file-notification race
                        ;; after real P4 has written disk, before our completion.
                        (with-current-buffer (get-file-buffer path)
+                         ;; A real file-notify callback sets this flag before
+                         ;; calling the handler.  Emulate that on both versions.
+                         (setq auto-revert-notify-modified-p t)
                          (auto-revert-handler)
                          (should (equal (buffer-string) "auto-revert lifecycle\n"))
                          (should-not (buffer-modified-p))

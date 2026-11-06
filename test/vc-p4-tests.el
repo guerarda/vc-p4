@@ -398,6 +398,37 @@
       (should (eq (plist-get result :status) 'cancelled))
       (should-not vc-p4--active))))
 
+(ert-deftest vc-p4-async-missed-exit-notifications-still-complete ()
+  (vc-p4-test-async
+    (let* (result
+           (job (vc-p4--run-async
+                 temporary-file-directory (lambda (value) (setq result value))
+                 "-c" "sleep 0.1; printf content; printf diagnostic >&2")))
+      (vc-p4-test-await (lambda () (vc-p4--job-process job)))
+      ;; Emulate missing terminal notifications while retaining actual process
+      ;; states and both unmodified output filters.
+      (set-process-sentinel (vc-p4--job-process job) #'ignore)
+      (set-process-sentinel (vc-p4--job-stderr-process job) #'ignore)
+      (vc-p4-test-await (lambda () result))
+      (should (eq (plist-get result :status) 'success))
+      (should (equal (plist-get result :stdout) "content"))
+      (should (equal (plist-get result :stderr) "diagnostic"))
+      (should-not (vc-p4--job-timer job)))))
+
+(ert-deftest vc-p4-async-completion-waits-for-held-stderr-without-notifications ()
+  (vc-p4-test-async
+    (let* (result
+           (job (vc-p4--run-async
+                 temporary-file-directory (lambda (value) (setq result value))
+                 "-c" "printf content; (sleep 0.1; printf late-diagnostic >&2) &")))
+      (vc-p4-test-await (lambda () (vc-p4--job-process job)))
+      (set-process-sentinel (vc-p4--job-process job) #'ignore)
+      (set-process-sentinel (vc-p4--job-stderr-process job) #'ignore)
+      (vc-p4-test-await (lambda () result))
+      (should (eq (plist-get result :status) 'success))
+      (should (equal (plist-get result :stdout) "content"))
+      (should (equal (plist-get result :stderr) "late-diagnostic")))))
+
 (ert-deftest vc-p4-async-timeout-releases-queue ()
   (vc-p4-test-async
     (let* ((vc-p4-command-timeout 0.1) (calls 0) first second
