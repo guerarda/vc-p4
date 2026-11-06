@@ -89,6 +89,10 @@ details. Revert only the disposable edit after checking.
    Confirm it remains intact. Closing a pending view must not produce a late
    buffer switch or error popup. Report actual GUI behaviour separately from
    automated validation.
+5. Follow a changelist link in the log, or use `M-x vc-p4-changes` and select
+   one. Check the description and affected-file actions, then follow a file
+   revision link. `M-x vc-p4-describe-change` also accepts `@number` directly.
+   Verify that `g` refreshes these views using the same workspace context.
 
 ## Native editing lifecycle
 

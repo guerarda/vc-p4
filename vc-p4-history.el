@@ -15,12 +15,23 @@
 (defcustom vc-p4-max-pending-views 32
   "Maximum number of pending P4 history and revision views."
   :type 'natnum :group 'vc-p4)
+(defcustom vc-p4-changes-limit 100
+  "Maximum submitted changelists to show for a file."
+  :type 'natnum :group 'vc-p4)
 (defvar vc-p4-history--tasks nil)
 (defvar-local vc-p4-history--entries nil)
 (defvar-local vc-p4-history--file nil)
+(defvar-local vc-p4-history--depot nil)
 (defvar-local vc-p4-history--ready nil)
+(defvar-local vc-p4-history--settings nil)
+(put 'vc-p4-history--settings 'permanent-local t)
 (cl-defstruct (vc-p4-history--task (:constructor vc-p4-history--make-task))
   files owner contexts destination gate reader writer timer deadline done)
+
+(defun vc-p4-history--restore-settings ()
+  "Restore the invoking workspace settings after a view changes major mode."
+  (dolist (setting vc-p4-history--settings)
+    (set (make-local-variable (car setting)) (copy-tree (cdr setting)))))
 
 (defun vc-p4-history--finish (task &optional error-text)
   "Release TASK and finish its native VC notification with ERROR-TEXT if any."
@@ -61,9 +72,7 @@
                   (funcall (vc-p4-history--task-writer task) data)
                   ;; Revert/navigation commands run from the resulting view.
                   ;; Retain the invoking workspace's buffer-local settings.
-                  (dolist (variable '(vc-p4-program vc-p4-diff-program process-environment exec-path))
-                    (set (make-local-variable variable)
-                         (copy-tree (buffer-local-value variable (vc-p4-history--task-owner task)))))
+                  (vc-p4-history--restore-settings)
                   (goto-char (point-min))
                   (set-buffer-modified-p nil)))
               (vc-p4-history--finish task))))
@@ -76,13 +85,17 @@
 
 (defun vc-p4-history--start (files destination reader writer)
   "Acquire FILES with READER and publish through WRITER into DESTINATION."
-  (let ((destination (get-buffer-create destination)))
+  (let ((destination (get-buffer-create destination))
+        (settings (mapcar (lambda (variable) (cons variable (copy-tree (symbol-value variable))))
+                          '(vc-p4-program vc-p4-diff-program process-environment exec-path))))
     (dolist (task (copy-sequence vc-p4-history--tasks))
       (when (eq destination (vc-p4-history--task-destination task))
         (vc-p4-history--finish task "P4 view superseded")))
     (when (>= (length vc-p4-history--tasks) (max 1 vc-p4-max-pending-views))
       (user-error "P4 view queue is full"))
     (with-current-buffer destination
+      (setq-local vc-p4-history--settings settings)
+      (vc-p4-history--restore-settings)
       (let ((inhibit-read-only t)) (erase-buffer))
       (setq mode-line-process " P4?"))
     (let* ((gate (make-process :name "vc-p4-history" :buffer destination
@@ -143,19 +156,24 @@
     (cl-delete-duplicates (nreverse entries) :key (lambda (row) (plist-get row :identity))
                           :test #'equal :from-end t)))
 
-(defun vc-p4-history--entries (file &optional start limit)
-  "Return FILE's cached history at START, bounded by LIMIT, or signal pending."
+(defun vc-p4-history--records (file args)
+  "Return cached P4 records for FILE and ARGS, or signal pending/failure."
   (let* ((vc-p4-status nil)
-         (spec (if (and start (string-match-p "\\`//[^\n\r]+#[0-9]+\\'" start)) start
-                 (concat (vc-p4--escape file)
-                         (when start (vc-p4--revision-spec start)))))
-         (records (vc-p4--cached
-                   file (append '("filelog" "-i" "-l")
-                                (when (numberp limit) (list "-m" (number-to-string limit)))
-                                (list spec)))))
+         (records (vc-p4--cached file args)))
     (pcase vc-p4-status
       ('pending (signal 'vc-p4-pending (list file)))
       ('error (signal 'vc-p4-error (list vc-p4-last-error))))
+    records))
+
+(defun vc-p4-history--entries (file &optional start limit depot)
+  "Return FILE's cached history at START, bounded by LIMIT, or signal pending."
+  (let* ((spec (if (and start (string-match-p "\\`//[^\n\r]+#[0-9]+\\'" start)) start
+                 (concat (or depot (vc-p4--escape file))
+                         (when start (vc-p4--revision-spec start)))))
+         (records (vc-p4-history--records
+                   file (append '("filelog" "-i" "-l")
+                                (when (numberp limit) (list "-m" (number-to-string limit)))
+                                (list spec)))))
     (vc-p4-history--parse records)))
 
 (defun vc-p4-history--render (groups)
@@ -164,9 +182,11 @@
   (dolist (group groups)
     (insert "File: " (car group) "\n\n")
     (dolist (row (cdr group))
-      (insert "Revision: " (plist-get row :identity) "\n"
-              "Changelist: @" (plist-get row :change) "\n"
-              "Author: " (plist-get row :user) "\n"
+      (insert "Revision: " (plist-get row :identity) "\nChangelist: ")
+      (let ((change (plist-get row :change)) (file (car group)))
+        (insert-text-button (concat "@" change) 'follow-link t
+                            'action (lambda (_) (vc-p4-describe-change change file))))
+      (insert "\nAuthor: " (plist-get row :user) "\n"
               "Date: " (format-time-string "%Y-%m-%d %H:%M:%S UTC"
                                            (string-to-number (plist-get row :time)) t) "\n"
               "Action: " (plist-get row :action) "\n")
@@ -184,18 +204,20 @@
   (when (and limit (not (and (integerp limit) (> limit 0))))
     (user-error "P4 history limit must be a positive entry count"))
   (let ((files (mapcar #'expand-file-name files))
+        (depot (when (bound-and-true-p vc-p4-revision-mode) vc-p4-history--depot))
         (acquired (make-hash-table :test #'equal)))
     (vc-p4-history--start
      files buffer
      (lambda () (mapcar (lambda (file)
                           (or (gethash file acquired)
                               (puthash file
-                                       (cons file (vc-p4-history--entries file start-revision limit))
+                                       (cons file (vc-p4-history--entries file start-revision limit depot))
                                        acquired))) files))
      #'vc-p4-history--render)))
 
 (define-derived-mode vc-p4-log-view-mode log-view-mode "P4-Log"
   "Browse per-file P4 revisions, with changelists labeled separately."
+  (vc-p4-history--restore-settings)
   (setq-local log-view-file-re "^File: \\(.+\\)$"
               log-view-message-re "^Revision: \\(//.+#[0-9]+\\)$"
               log-view-per-file-logs t))
@@ -303,7 +325,12 @@
                          (substring (secure-hash 'sha256
                                                  (prin1-to-string (list (vc-p4--context file) file
                                                                         vc-p4--generation))) 0 12)))
-           (buffer (and immutable (get-buffer name))) rows)
+           (buffer (and immutable (get-buffer name)))
+           (depot (when (string-match-p "\\`//[^\n\r]+#[0-9]+\\'" revision)
+                    (replace-regexp-in-string "#[0-9]+\\'" "" revision)))
+           (rows (when (cl-find revision vc-p4-history--entries
+                                :key (lambda (row) (plist-get row :identity)) :test #'equal)
+                   vc-p4-history--entries)))
       (unless (and buffer (or (buffer-local-value 'vc-p4-history--ready buffer)
                               (cl-find buffer vc-p4-history--tasks
                                        :key #'vc-p4-history--task-destination)))
@@ -314,10 +341,14 @@
         (vc-p4-history--start
          (list file) buffer
          (lambda ()
-           (unless rows (setq rows (vc-p4-history--entries file)))
+           (unless rows (setq rows (vc-p4-history--entries file nil nil depot)))
            (unless rows (user-error "No P4 history is available for this file"))
            (let ((target (vc-p4-history--target file revision rows)))
              (unless target (user-error "No content revision matches %s" revision))
+             (when (and (not (equal target "0"))
+                        (not (cl-find target rows :key (lambda (row) (plist-get row :identity)) :test #'equal)))
+               (setq rows (vc-p4-history--entries file nil nil
+                                                  (replace-regexp-in-string "#[0-9]+\\'" "" target))))
              (list (vc-p4-history--bytes file target) rows target)))
          (lambda (data)
            (insert (car data))
@@ -327,6 +358,7 @@
              (delay-mode-hooks (set-auto-mode)))
            (setq-local vc-p4-history--file file
                        vc-p4-history--entries (cadr data)
+                       vc-p4-history--depot (plist-get (car (cadr data)) :depot)
                        vc-p4-history--ready t
                        vc-parent-buffer owner
                        vc-buffer-overriding-fileset (list 'P4 (list file))
@@ -334,6 +366,101 @@
            (read-only-mode 1)
            (vc-p4-revision-mode 1))))
       buffer)))
+
+(defun vc-p4-history--source-file ()
+  "Return the local file anchoring the current P4 history view."
+  (or vc-p4-history--file buffer-file-name
+      (when (derived-mode-p 'vc-p4-log-view-mode) (log-view-current-file))
+      (user-error "Visit a P4 file or its history first")))
+
+(defun vc-p4-history--view-name (label file)
+  "Return a view name for LABEL scoped to FILE's workspace."
+  (format "*P4 %s <%s>*" label
+          (substring (secure-hash 'sha256 (prin1-to-string (list (vc-p4--context file) file))) 0 12)))
+
+(define-derived-mode vc-p4-changes-mode special-mode "P4-Changes"
+  "Browse submitted P4 changelists and their affected files.
+Use TAB and RET to follow changelist and file-revision links.  Revert with g.")
+
+(defun vc-p4-history--change-number (change)
+  "Validate CHANGE and return its numbered changelist string."
+  (let ((number (string-remove-prefix "@" (format "%s" change))))
+    (unless (and (string-match-p "\\`[0-9]+\\'" number) (> (string-to-number number) 0))
+      (user-error "Use a numbered submitted changelist"))
+    number))
+
+;;;###autoload
+(defun vc-p4-changes (&optional file limit)
+  "Show submitted changelists affecting FILE, bounded by LIMIT."
+  (interactive)
+  (let* ((file (expand-file-name (or file (vc-p4-history--source-file))))
+         (limit (or limit vc-p4-changes-limit))
+         (buffer (get-buffer-create (vc-p4-history--view-name "changes" file))))
+    (unless (and (integerp limit) (> limit 0)) (user-error "Use a positive changelist limit"))
+    (with-current-buffer buffer
+      (unless (derived-mode-p 'vc-p4-changes-mode) (vc-p4-changes-mode)))
+    (vc-p4-history--start
+     (list file) buffer
+     (lambda () (vc-p4-history--records
+                 file (list "changes" "-i" "-l" "-s" "submitted" "-m" (number-to-string limit)
+                            (vc-p4--escape file))))
+     (lambda (records)
+       (setq-local vc-p4-history--file file
+                   revert-buffer-function (lambda (&rest _) (vc-p4-changes file limit)))
+       (insert "Submitted changelists for " file "\n\n")
+       (unless records (insert "No submitted changelists.\n"))
+       (dolist (record records)
+         (let ((change (alist-get 'change record)))
+           (insert-text-button (concat "@" change) 'follow-link t
+                               'action (lambda (_) (vc-p4-describe-change change file)))
+           (insert "  " (alist-get 'user record) "  "
+                   (format-time-string "%Y-%m-%d %H:%M:%S UTC"
+                                       (string-to-number (alist-get 'time record)) t) "\n")
+           (dolist (line (split-string (or (alist-get 'desc record) "") "\n"))
+             (insert "    " line "\n"))
+           (insert "\n")))))
+    (pop-to-buffer buffer)))
+
+;;;###autoload
+(defun vc-p4-describe-change (change &optional file)
+  "Show submitted CHANGE and exact affected revisions in FILE's context."
+  (interactive (list (read-string "Submitted changelist (@number): ")))
+  (let* ((change (vc-p4-history--change-number change))
+         (file (expand-file-name (or file (vc-p4-history--source-file))))
+         (buffer (get-buffer-create (vc-p4-history--view-name (concat "changelist @" change) file))))
+    (with-current-buffer buffer
+      (unless (derived-mode-p 'vc-p4-changes-mode) (vc-p4-changes-mode)))
+    (vc-p4-history--start
+     (list file) buffer
+     (lambda ()
+       (let ((record (car (vc-p4-history--records file (list "describe" "-s" change)))))
+         (unless (and record (equal (alist-get 'status record) "submitted"))
+           (user-error "Changelist @%s is not a submitted changelist" change))
+         record))
+     (lambda (record)
+       (setq-local vc-p4-history--file file
+                   revert-buffer-function (lambda (&rest _) (vc-p4-describe-change change file)))
+       (insert "Submitted changelist @" (alist-get 'change record) "\n"
+               "Author: " (alist-get 'user record) "\n"
+               "Date: " (format-time-string "%Y-%m-%d %H:%M:%S UTC"
+                                            (string-to-number (alist-get 'time record)) t) "\n\n")
+       (dolist (line (split-string (or (alist-get 'desc record) "") "\n"))
+         (insert "    " line "\n"))
+       (insert "\nAffected files:\n")
+       (let ((index 0))
+         (while (vc-p4-history--field record "depotFile" index)
+           (let* ((depot (vc-p4-history--field record "depotFile" index))
+                  (revision (vc-p4-history--field record "rev" index))
+                  (identity (concat depot "#" revision))
+                  (action (vc-p4-history--field record "action" index)))
+             (insert "  " action "  ")
+             (if (member action '("delete" "move/delete" "purge"))
+                 (insert identity " (no content)")
+               (insert-text-button identity 'follow-link t
+                                   'action (lambda (_) (pop-to-buffer (vc-find-revision file identity 'P4)))))
+             (insert "\n"))
+           (cl-incf index)))))
+    (pop-to-buffer buffer)))
 
 (provide 'vc-p4-history)
 ;;; vc-p4-history.el ends here

@@ -11,9 +11,9 @@ Validate other environments using the workspace smoke check.
 ## Checks
 
 - Warning-free byte compilation.
-- 109 backend/process/operation/history tests; 141 total including seven real diff-hl
+- 114 backend/process/operation/history tests; 146 total including seven real diff-hl
   consumer tests, ten incremental-rendering tests and fifteen fault/input tests.
-- 29 disposable-server tests covering actual metadata, byte retrieval, state,
+- 30 disposable-server tests covering actual metadata, byte retrieval, state,
   mappings, native file operations and ten gutter scenarios. Run against both
   case-sensitive and case-insensitive servers; the alias-case assertion applies
   only to the latter.
@@ -74,8 +74,11 @@ coding, and never create backup files beside the working file. Symbolic revision
 requests resolve to exact content identities; failed views can be retried.
 Pending view timers and native completion processes are bounded and discarded
 on buffer closure or configuration changes. Revision navigation follows the
-displayed filelog ancestry, skipping entries without content. Directory logs,
-submitted-changelist views and annotation are separate remaining work.
+displayed filelog ancestry, skipping entries without content. Submitted-change
+lists and descriptions share the same view lifecycle and link to affected-file
+contents, including files outside the original file's ancestry. Refresh preserves
+buffer-local P4 configuration across major-mode initialization. Pending
+changelist management, directory logs and annotation remain separate work.
 
 The diff-hl source is unchanged. Backend acquisition remains in `vc-p4.el`;
 `vc-p4-gutter.el` handles completed-result validation and incremental display.

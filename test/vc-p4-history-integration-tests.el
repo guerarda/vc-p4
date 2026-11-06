@@ -48,3 +48,40 @@
         (when (get-buffer "*vc-change-log*") (kill-buffer "*vc-change-log*"))))))
 
 (provide 'vc-p4-history-integration-tests)
+
+(ert-deftest vc-p4-real-history-changes-describe-and-unrelated-file ()
+  (let* ((file (vc-p4-integration-file "history-moved.txt"))
+         (directory (file-name-directory file))
+         (opened (vc-p4--query directory "opened"))
+         (change (alist-get 'headChange (vc-p4--stat file)))
+         buffers)
+    (save-window-excursion
+      (unwind-protect
+          (progn
+            (vc-p4-changes file 10)
+            (push (current-buffer) buffers)
+            (vc-p4-integration-drain)
+            (goto-char (point-min)) (search-forward (concat "@" change))
+            (button-activate (button-at (1- (point))))
+            (push (current-buffer) buffers)
+            (vc-p4-integration-drain)
+            (should (string-match-p "Submitted changelist @" (buffer-string)))
+            (should (string-match-p "move/delete.*(no content)" (buffer-string)))
+            ;; g must preserve the view's workspace settings and perform another
+            ;; read-only acquisition rather than losing its owning context.
+            (revert-buffer t t)
+            (vc-p4-integration-drain)
+            (should (string-match-p "history-moved.txt#1" (buffer-string)))
+            (vc-p4-describe-change "1" file)
+            (push (current-buffer) buffers)
+            (vc-p4-integration-drain)
+            (goto-char (point-min)) (search-forward "//depot/clean.txt#1")
+            (button-activate (button-at (1- (point))))
+            (push (current-buffer) buffers)
+            (vc-p4-integration-drain)
+            (should (equal (buffer-string) "unchanged\n"))
+            (should (equal vc-p4-history--depot "//depot/clean.txt"))
+            (should buffer-read-only)
+            (should-not buffer-file-name)
+            (should (equal (vc-p4--query directory "opened") opened)))
+        (dolist (buffer buffers) (when (buffer-live-p buffer) (kill-buffer buffer)))))))

@@ -951,6 +951,8 @@ cached baselines and may run local diff; automatic gutters always use ASYNC."
 (autoload 'vc-p4-next-revision "vc-p4-history")
 (autoload 'vc-p4-revision-completion-table "vc-p4-history")
 (autoload 'vc-p4-history--find-revision "vc-p4-history")
+(autoload 'vc-p4-changes "vc-p4-history" nil t)
+(autoload 'vc-p4-describe-change "vc-p4-history" nil t)
 (advice-add 'vc-find-revision :around #'vc-p4-history--find-revision)
 
 (advice-add 'basic-save-buffer :before #'vc-p4--check-operation-save)

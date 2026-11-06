@@ -246,19 +246,118 @@
 
 (ert-deftest vc-p4-history-view-retains-invoking-workspace-settings ()
   (vc-p4-history-test
-    (vc-p4-test-with-file "working\n"
-      (with-temp-buffer
-        (setq-local vc-p4-program "/custom/p4")
-        (setq-local process-environment (cons "P4CLIENT=history-client" process-environment))
-        (let ((output (generate-new-buffer " *history-settings*")))
-          (unwind-protect
-              (progn
-                (vc-p4-history--start (list file) output (lambda () "history") #'insert)
-                (vc-p4-test-await (lambda () (null vc-p4-history--tasks)))
-                (with-current-buffer output
-                  (should (local-variable-p 'vc-p4-program))
-                  (should (equal vc-p4-program "/custom/p4"))
-                  (should (equal (getenv "P4CLIENT") "history-client"))))
-            (kill-buffer output)))))))
+   (vc-p4-test-with-file "working\n"
+                         (with-temp-buffer
+                           (setq-local vc-p4-program "/custom/p4")
+                           (setq-local process-environment (cons "P4CLIENT=history-client" process-environment))
+                           (let ((output (generate-new-buffer " *history-settings*")))
+                             (unwind-protect
+                                 (progn
+                                   (vc-p4-history--start (list file) output (lambda () "history") #'insert)
+                                   (vc-p4-test-await (lambda () (null vc-p4-history--tasks)))
+                                   (with-current-buffer output
+                                     (should (local-variable-p 'vc-p4-program))
+                                     (should (equal vc-p4-program "/custom/p4"))
+                                     (should (equal (getenv "P4CLIENT") "history-client"))))
+                               (kill-buffer output)))))))
+
+(ert-deftest vc-p4-history-submitted-changes-describe-and-affected-file-links ()
+  (vc-p4-history-test
+   (vc-p4-test-with-file "working\n"
+                         (let ((rows (vc-p4-history--parse vc-p4-history-test-records)) buffers commands)
+                           (save-window-excursion
+                             (cl-letf (((symbol-function 'vc-p4-history--records)
+                                        (lambda (_ args)
+                                          (push args commands)
+                                          (pcase (car args)
+                                            ("changes" '(((change . "30") (user . "alice") (time . "1700000030") (desc . "submitted"))))
+                                            ("describe" '(((change . "30") (user . "alice") (time . "1700000030")
+                                                           (desc . "full\ndescription") (status . "submitted")
+                                                           (depotFile0 . "//depot/new.txt") (rev0 . "1") (action0 . "move/add")
+                                                           (depotFile1 . "//depot/old.txt") (rev1 . "3") (action1 . "move/delete")))))))
+                                       ((symbol-function 'vc-p4-history--entries) (lambda (&rest _) rows))
+                                       ((symbol-function 'vc-p4--base)
+                                        (lambda (_ revision) (should (equal revision "//depot/new.txt#1")) "submitted bytes\n")))
+                               (unwind-protect
+                                   (progn
+                                     (vc-p4-changes file 2)
+                                     (push (current-buffer) buffers)
+                                     (vc-p4-test-await (lambda () (null vc-p4-history--tasks)))
+                                     (should buffer-read-only)
+                                     (should (equal (car commands)
+                                                    (list "changes" "-i" "-l" "-s" "submitted" "-m" "2" (vc-p4--escape file))))
+                                     (goto-char (point-min)) (search-forward "@30")
+                                     (button-activate (button-at (1- (point))))
+                                     (push (current-buffer) buffers)
+                                     (vc-p4-test-await (lambda () (null vc-p4-history--tasks)))
+                                     (should (equal (car commands) '("describe" "-s" "30")))
+                                     (should (string-match-p "move/delete  //depot/old.txt#3 (no content)" (buffer-string)))
+                                     (goto-char (point-min)) (search-forward "//depot/new.txt#1")
+                                     (button-activate (button-at (1- (point))))
+                                     (push (current-buffer) buffers)
+                                     (vc-p4-test-await (lambda () (null vc-p4-history--tasks)))
+                                     (should (equal (buffer-string) "submitted bytes\n"))
+                                     (should buffer-read-only)
+                                     (should-not buffer-file-name)
+                                     (should (equal (vc-p4--local-bytes file) "working\n")))
+                                 (dolist (buffer buffers) (when (buffer-live-p buffer) (kill-buffer buffer))))))))))
+
+(ert-deftest vc-p4-history-describe-rejects-pending-changelists ()
+  (vc-p4-history-test
+   (vc-p4-test-with-file "working\n"
+                         (save-window-excursion
+                           (cl-letf (((symbol-function 'vc-p4-history--records)
+                                      (lambda (&rest _) '(((change . "10") (status . "pending"))))))
+                             (vc-p4-describe-change "@10" file)
+                             (unwind-protect
+                                 (progn
+                                   (vc-p4-test-await (lambda () (null vc-p4-history--tasks)))
+                                   (should (string-match-p "not a submitted changelist" (buffer-string))))
+                               (kill-buffer (current-buffer))))))))
+
+(ert-deftest vc-p4-history-affected-file-uses-its-own-history ()
+  (vc-p4-history-test
+   (vc-p4-test-with-file "working\n"
+                         (let ((rows (vc-p4-history--parse vc-p4-history-test-records)) buffer queried)
+                           (cl-letf (((symbol-function 'vc-p4-history--entries)
+                                      (lambda (_ &optional _start _limit depot)
+                                        (if depot
+                                            (progn (setq queried depot)
+                                                   (list (list :depot depot :identity (concat depot "#1") :revision "1" :action "add")))
+                                          rows)))
+                                     ((symbol-function 'vc-p4--base) (lambda (&rest _) "other file\n")))
+                             (unwind-protect
+                                 (progn
+                                   (setq buffer (vc-find-revision file "//depot/unrelated.txt#1" 'P4))
+                                   (vc-p4-test-await (lambda () (null vc-p4-history--tasks)))
+                                   (should (equal queried "//depot/unrelated.txt"))
+                                   (with-current-buffer buffer
+                                     (should (equal vc-p4-history--depot "//depot/unrelated.txt"))
+                                     (should-error (vc-p4-revision-previous) :type 'user-error)))
+                               (when (buffer-live-p buffer) (kill-buffer buffer))))))))
+
+(ert-deftest vc-p4-history-native-log-revert-preserves-local-context ()
+  (vc-p4-history-test
+   (vc-p4-test-with-file "working\n"
+                         (with-temp-buffer
+                           (setq-local vc-p4-program "/custom/p4")
+                           (let ((rows (vc-p4-history--parse vc-p4-history-test-records)))
+                             (save-window-excursion
+                               (cl-letf (((symbol-function 'vc-p4-history--entries) (lambda (&rest _) rows)))
+                                 (unwind-protect
+                                     (progn
+                                       (vc-print-log-internal 'P4 (list file) nil nil 10)
+                                       (vc-p4-test-await (lambda () (null vc-p4-history--tasks)))
+                                       (should (equal vc-p4-program "/custom/p4"))
+                                       (revert-buffer t t)
+                                       (vc-p4-test-await (lambda () (null vc-p4-history--tasks)))
+                                       (should (equal vc-p4-program "/custom/p4"))
+                                       (should (string-match-p "Revision: //depot/new.txt#1" (buffer-string))))
+                                   (when (get-buffer "*vc-change-log*") (kill-buffer "*vc-change-log*"))))))))))
+
+(ert-deftest vc-p4-history-changelist-numbers-are-not-file-revisions ()
+  (should (equal (vc-p4-history--change-number "@123") "123"))
+  (dolist (invalid '("#3" "0" "default" "3\n4" "-2" "@"))
+    (should-error (vc-p4-history--change-number invalid) :type 'user-error)))
 
 (provide 'vc-p4-history-tests)

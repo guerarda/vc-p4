@@ -96,6 +96,8 @@ Use `M-x diff-hl-next-hunk` and `M-x diff-hl-previous-hunk` to navigate changes.
 | Move a tracked or added file | `M-x vc-rename-file` |
 | File history | `C-x v l` (`vc-print-log`) |
 | View a revision | `C-x v ~` (`vc-revision-other-window`) |
+| Submitted changes affecting this file | `M-x vc-p4-changes` |
+| Describe a submitted changelist | `M-x vc-p4-describe-change` |
 | Cancel this file's operation | `M-x vc-p4-cancel-operation` |
 
 In the history buffer, `n` and `p` move between entries; `f` opens the entry's
@@ -104,6 +106,9 @@ submitted changelists are labeled `@123`. In a revision buffer, `C-c C-p` and
 `C-c C-n` visit older and newer content through the displayed ancestry. Deleted
 and purged revisions have no content to visit. These views fetch data in the
 background and do not sync, checkout or replace working-file text.
+The changelist links in file history open a submitted-change description.
+Use TAB/RET in submitted-change views to open affected-file revisions; deleted
+files are identified as having no content. `g` refreshes the current view.
 
 Commands return while P4 runs. Checkout, registration and interactive revert
 continue automatically when required metadata arrives. Editing the initiating
