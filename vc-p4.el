@@ -510,9 +510,24 @@ revision alone is not unique across Perforce clients or servers."
 (defvar vc-p4--generation 0)
 (defvar vc-p4--diff-tasks nil)
 (defvar-local vc-p4--diff-owner-task nil)
+(defvar vc-p4--comparison-snapshots nil)
+(defvar vc-p4--comparison-settings nil)
 (cl-defstruct (vc-p4--diff-task (:constructor vc-p4--make-diff-task))
   files rev1 rev2 destination source tick contexts stamps generation
-  gate worker timer temps chunks remaining snapshot switches coding baselines deadline done)
+  gate worker timer temps chunks remaining snapshot switches coding baselines deadline done snapshots)
+
+(defun vc-p4--diff-snapshots-valid-p (snapshots)
+  "Whether every buffer represented by SNAPSHOTS still has the same text."
+  (cl-every
+   (lambda (pair)
+     (let ((buffer (plist-get (cdr pair) :buffer)))
+       (and (buffer-live-p buffer)
+            (with-current-buffer buffer
+              (and (equal buffer-file-name (car pair))
+                   (= (buffer-chars-modified-tick) (plist-get (cdr pair) :tick))
+                   (equal buffer-file-coding-system (plist-get (cdr pair) :coding))
+                   (equal (vc-p4--context (car pair)) (plist-get (cdr pair) :context)))))))
+   snapshots))
 
 (defun vc-p4--file-stamp (file)
   "Return local FILE identity and modification attributes."
@@ -526,15 +541,19 @@ revision alone is not unique across Perforce clients or servers."
        (= vc-p4--generation (vc-p4--diff-task-generation task))
        (equal (vc-p4--diff-task-contexts task)
               (mapcar #'vc-p4--context (vc-p4--diff-task-files task)))
-       (equal (vc-p4--diff-task-stamps task)
-              (mapcar #'vc-p4--file-stamp (vc-p4--diff-task-files task)))
-       (cl-every (lambda (pair) (eq (cdr pair) (gethash (car pair) vc-p4--metadata)))
-                 (vc-p4--diff-task-baselines task))
+       (or (vc-p4--diff-task-rev2 task)
+           (equal (vc-p4--diff-task-stamps task)
+                  (mapcar #'vc-p4--file-stamp (vc-p4--diff-task-files task))))
+       (vc-p4--diff-snapshots-valid-p (vc-p4--diff-task-snapshots task))
+       (or (vc-p4--diff-task-rev2 task)
+           (cl-every (lambda (pair) (eq (cdr pair) (gethash (car pair) vc-p4--metadata)))
+                     (vc-p4--diff-task-baselines task)))
        (or (null (vc-p4--diff-task-source task))
            (and (buffer-live-p (vc-p4--diff-task-source task))
                 (with-current-buffer (vc-p4--diff-task-source task)
                   (and (equal buffer-file-name (car (vc-p4--diff-task-files task)))
-                       (= (buffer-chars-modified-tick) (vc-p4--diff-task-tick task))))))))
+                       (or (vc-p4--diff-task-rev2 task)
+                           (= (buffer-chars-modified-tick) (vc-p4--diff-task-tick task)))))))))
 
 (defun vc-p4--diff-finish (task &optional success cancelled)
   "Release TASK; publish valid SUCCESS or quietly discard CANCELLED work."
@@ -596,7 +615,9 @@ revision alone is not unique across Perforce clients or servers."
                                           (vc-p4-working-revision file)))))
                    (new (if (vc-p4--diff-task-rev2 task)
                             (vc-p4--base file (vc-p4--diff-task-rev2 task))
-                          (or (vc-p4--diff-task-snapshot task)
+                          (or (plist-get (alist-get file (vc-p4--diff-task-snapshots task)
+                                                    nil nil #'equal) :bytes)
+                              (vc-p4--diff-task-snapshot task)
                               (vc-p4--local-bytes file)))))
               (cond
                ((eq vc-p4-status 'error) (vc-p4--diff-finish task))
@@ -643,7 +664,7 @@ revision alone is not unique across Perforce clients or servers."
         (error (setq vc-p4-last-error (error-message-string err))
                (vc-p4--diff-finish task))))))
 
-(defun vc-p4--diff-async (files rev1 rev2 buffer &optional snapshot)
+(defun vc-p4--diff-async (files rev1 rev2 buffer &optional snapshot snapshots)
   "Start an asynchronous diff into BUFFER, optionally using buffer SNAPSHOT."
   (let* ((files (mapcar #'expand-file-name files))
          (destination (get-buffer-create (or buffer "*vc-diff*")))
@@ -652,6 +673,7 @@ revision alone is not unique across Perforce clients or servers."
          ;; Native VC selects DOS process-output decoding on Windows.  Capture
          ;; it before its dynamic binding expires, retaining raw P4/file bytes.
          (coding (or coding-system-for-read 'utf-8-unix))
+         (switches (copy-tree (or (vc-switches 'P4 'diff) '("-u"))))
          (existing (cl-find destination vc-p4--diff-tasks
                             :key #'vc-p4--diff-task-destination)))
     (if (and existing (vc-p4--diff-valid-p existing)
@@ -659,6 +681,8 @@ revision alone is not unique across Perforce clients or servers."
              (equal rev1 (vc-p4--diff-task-rev1 existing))
              (equal rev2 (vc-p4--diff-task-rev2 existing))
              (equal coding (vc-p4--diff-task-coding existing))
+             (equal snapshots (vc-p4--diff-task-snapshots existing))
+             (equal switches (vc-p4--diff-task-switches existing))
              (equal snapshot (vc-p4--diff-task-snapshot existing)))
         1
       (when existing (vc-p4--diff-finish existing nil t))
@@ -685,7 +709,8 @@ revision alone is not unique across Perforce clients or servers."
                     :stamps (mapcar #'vc-p4--file-stamp files)
                     :generation vc-p4--generation :snapshot snapshot
                     :coding coding
-                    :switches (or (vc-switches 'P4 'diff) '("-u"))
+                    :snapshots snapshots
+                    :switches switches
                     :deadline (+ (float-time) (* 4 vc-p4-command-timeout)))))
         (push task vc-p4--diff-tasks)
         (with-current-buffer destination (setq vc-p4--diff-owner-task task))
@@ -865,7 +890,9 @@ markers on completion.  The mode line continues to identify pending work."
 Nil revisions mean have revision and working contents respectively.
 ASYNC uses background retrieval and local diff.  Synchronous callers require
 cached baselines and may run local diff; automatic gutters always use ASYNC."
-  (if async (vc-p4--diff-async files rev1 rev2 buffer)
+  (dolist (setting vc-p4--comparison-settings)
+    (set (make-local-variable (car setting)) (copy-tree (cdr setting))))
+  (if async (vc-p4--diff-async files rev1 rev2 buffer nil vc-p4--comparison-snapshots)
     (let ((destination (get-buffer-create (or buffer "*vc-diff*")))
         (inhibit-read-only t)
         (result 0))
@@ -965,6 +992,12 @@ cached baselines and may run local diff; automatic gutters always use ASYNC."
 (autoload 'vc-p4-annotate-command "vc-p4-annotate")
 (autoload 'vc-p4-annotate-time "vc-p4-annotate")
 (autoload 'vc-p4-annotate-extract-revision-at-line "vc-p4-annotate")
+(autoload 'vc-p4-compare "vc-p4-compare" nil t)
+(autoload 'vc-p4-ediff "vc-p4-compare" nil t)
+(autoload 'vc-p4-compare--vc-ediff "vc-p4-compare")
+(autoload 'vc-p4-compare--vc-version-ediff "vc-p4-compare")
+(advice-add 'vc-ediff :around #'vc-p4-compare--vc-ediff)
+(advice-add 'vc-version-ediff :around #'vc-p4-compare--vc-version-ediff)
 (advice-add 'vc-find-revision :around #'vc-p4-history--find-revision)
 
 (advice-add 'basic-save-buffer :before #'vc-p4--check-operation-save)

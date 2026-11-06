@@ -165,7 +165,7 @@ def run_fixture(args):
                               if args.diff_hl_dir else [])
                 subprocess.run(
                     [emacs, "-Q", "--batch", "--eval", "(setq load-prefer-newer t)", "-L", str(REPO), "-L", str(REPO / "test"),
-                     "-l", "vc-p4-integration-tests", "-l", "vc-p4-history-integration-tests", "-l", "vc-p4-annotate-integration-tests", *extra_args, "-f", "ert-run-tests-batch-and-exit"],
+                     "-l", "vc-p4-integration-tests", "-l", "vc-p4-history-integration-tests", "-l", "vc-p4-annotate-integration-tests", "-l", "vc-p4-compare-integration-tests", *extra_args, "-f", "ert-run-tests-batch-and-exit"],
                     cwd=root, env=test_env, check=True, timeout=60)
             finally:
                 process.terminate()

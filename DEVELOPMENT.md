@@ -11,9 +11,10 @@ Validate other environments using the workspace smoke check.
 ## Checks
 
 - Warning-free byte compilation.
-- 122 backend/process/operation/history/annotation tests; 154 total including seven real diff-hl
-  consumer tests, ten incremental-rendering tests and fifteen fault/input tests.
-- 32 disposable-server tests covering actual metadata, byte retrieval, state,
+- 138 backend/process/operation/history/annotation/comparison tests; 171 total
+  including seven real diff-hl consumer tests, ten incremental-rendering tests
+  and sixteen fault/input tests.
+- 36 disposable-server tests covering actual metadata, byte retrieval, state,
   mappings, native file operations and ten gutter scenarios. Run against both
   case-sensitive and case-insensitive servers; the alias-case assertion applies
   only to the latter.
@@ -95,7 +96,21 @@ Native reannotation clears local variables, so an internal snapshot preserves
 displayed ancestry and workspace context through previous/next navigation.
 Tests cover two authors, retained lines through a branch and move, native line
 revision lookup, expired metadata, queued input, empty text and binary rejection.
-Broader comparisons and Ediff are the remaining investigation work.
+`vc-p4-compare.el` uses the existing async diff pipeline with per-file snapshots
+for visiting buffers. Captured text, coding and configuration must still match
+before publishing. Fixed historical operands ignore working-file stamps and
+metadata invalidation, while configuration/generation guards remain. Changed
+diff switches supersede pending requests. Explicit request settings handle the
+different diff-mode initialization order in Emacs 30 and 31.
+
+P4-only native Ediff adapters prepare exact operands through the shared runner
+and pristine cache. Ediff uses decoded, separate buffers, never working buffers.
+Source/focus changes and superseded requests prevent late launches. Cleanup
+preserves edited snapshots. Binary metadata and non-text bytes reject Ediff
+clearly; native diff still reports binary differences. Tests run actual native
+Ediff sessions and known server contents, including decoded UTF-16 working text.
+Native Ediff's explicit local diff processing is unchanged; P4 acquisition does
+not wait on the initiating command path.
 
 The diff-hl source is unchanged. Backend acquisition remains in `vc-p4.el`;
 `vc-p4-gutter.el` handles completed-result validation and incremental display.

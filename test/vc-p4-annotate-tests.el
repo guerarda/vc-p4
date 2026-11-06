@@ -118,4 +118,31 @@
       (should (eq (car error) 'vc-p4-error))
       (should (string-match-p "Login expired" (error-message-string error))))))
 
+(ert-deftest vc-p4-annotate-log-navigation-reuses-a-matching-native-log ()
+  (let* ((history (vc-p4-history--parse vc-p4-history-test-records))
+         (file "/tmp/p4-attribution-context")
+         (log (get-buffer-create "*vc-change-log*")))
+    (save-window-excursion
+      (unwind-protect
+          (progn
+            (with-current-buffer log
+              (vc-p4-log-view-mode)
+              (let ((inhibit-read-only t))
+                (erase-buffer) (vc-p4-history--render (list (cons file history))))
+              (setq-local log-view-vc-backend 'P4 log-view-vc-fileset (list file)))
+            (with-temp-buffer
+              (vc-annotate-mode)
+              (let ((inhibit-read-only t))
+                (vc-p4-annotate--render
+                 file "//depot/new.txt#1" history
+                 (list (list :identity "//depot/old.txt#2" :change "20" :user "bob"
+                             :data "line\n" :metadata (cadr history))) nil))
+              (goto-char (point-min))
+              (cl-letf (((symbol-function 'vc-print-log-internal)
+                         (lambda (&rest _) (ert-fail "Refetched an already displayed log entry"))))
+                (vc-annotate-show-log-revision-at-line))
+              (with-current-buffer log
+                (should (equal (log-view-current-tag) "//depot/old.txt#2")))))
+        (kill-buffer log)))))
+
 (provide 'vc-p4-annotate-tests)

@@ -31,6 +31,7 @@ mutation has finished, explicitly reload the backend and its companion modules:
 (load-file "/path/to/p4vc/vc-p4-gutter.el")
 (load-file "/path/to/p4vc/vc-p4-history.el")
 (load-file "/path/to/p4vc/vc-p4-annotate.el")
+(load-file "/path/to/p4vc/vc-p4-compare.el")
 ```
 
 ## Five-minute check
@@ -100,6 +101,15 @@ details. Revert only the disposable edit after checking.
    The initial target is HAVE, including when depot head is newer. Do not
    manufacture production history just for attribution: the fixture covers
    multiple authors and submitted branch/move ancestry.
+7. Run `M-x vc-p4-compare` with empty operands to compare HAVE with working
+   text, including your disposable unsaved edit. The source must remain unsaved
+   and intact. Repeat with two explicit revisions and check the labels. `g`
+   should capture fresh working text. Native `C-x v =` retains its normal
+   saved-file behaviour.
+8. Run `M-x vc-ediff` or `M-x vc-p4-ediff`. Expect separate snapshot buffers;
+   working bytes and unsaved text must remain intact. Quit the session normally.
+   Unchanged snapshots should disappear; edited snapshots should be retained.
+   Moving away during pending acquisition must not open an obsolete session.
 
 ## Native editing lifecycle
 

@@ -3,6 +3,7 @@
 (require 'vc-p4-operation-tests)
 (require 'vc-p4-history-tests)
 (require 'vc-p4-annotate-tests)
+(require 'vc-p4-compare-tests)
 (defconst vc-p4-test-worker
   (expand-file-name "fault-worker.py" (file-name-directory load-file-name)))
 (defvar vc-p4-test-command nil)
@@ -104,6 +105,35 @@
               (should (string-match-p "timeout\\|timed out" (buffer-string))))
             (should (equal (vc-p4--local-bytes file) "one\ntwo\nthree\n")))
         (kill-buffer output)))))
+
+(ert-deftest vc-p4-input-comparison-and-ediff-preparation-stay-responsive ()
+  (dolist (ediff '(nil t))
+    (vc-p4-test-faults
+      (save-window-excursion
+        (find-file file)
+        (let ((inhibit-read-only t)) (erase-buffer) (insert "one\nchanged\nthree\n"))
+        (let ((source (current-buffer))
+              (typing (generate-new-buffer " *p4-comparison-typing*")) output)
+          (unwind-protect
+              (progn
+                (unless ediff (setq output (generate-new-buffer " *p4-input-comparison*")))
+                (setenv "VC_P4_FAULT_DELAY" "0.6")
+                (cl-letf (((symbol-function 'vc-p4-compare--ediff-buffers)
+                           (lambda (&rest _) (ert-fail "Ediff stole focus after typing elsewhere"))))
+                  (vc-p4-test-queued-input
+                   (lambda ()
+                     (if ediff (setq output (vc-p4-ediff file))
+                       (vc-p4-compare (list file) nil nil output))
+                     (switch-to-buffer typing)))
+                  (if ediff
+                      (vc-p4-test-await (lambda () (not (buffer-live-p output))))
+                    (vc-p4-test-await (lambda () (not (get-buffer-process output))))
+                    (with-current-buffer output
+                      (should (string-match-p (regexp-quote "-two\n+changed\n") (buffer-string))))))
+                (with-current-buffer typing (should (equal (buffer-string) "typed")))
+                (with-current-buffer source (should (equal (buffer-string) "one\nchanged\nthree\n"))))
+            (when (buffer-live-p output) (kill-buffer output))
+            (kill-buffer typing)))))))
 
 (ert-deftest vc-p4-input-show-hunk-does-not-block-or-display-after-typing ()
   (require 'diff-hl-show-hunk)

@@ -9,8 +9,8 @@ the `p4` command-line client and integrates with Emacs's built-in VC interface.
 
 **Status: experimental.** Gutter highlighting and asynchronous checkout, add,
 revert, delete and move are implemented through Emacs VC. Continue using the
-P4 CLI for submit, changelist management and other depot workflows. File
-history and read-only revision navigation are also available.
+P4 CLI for submit, pending changelist management and other depot workflows.
+File history, annotation, revision comparisons and Ediff are also available.
 
 ## Features
 
@@ -26,6 +26,8 @@ history and read-only revision navigation are also available.
   including submitted move and integration ancestry.
 - Native line annotation with author/date, exact source revisions and
   changelist navigation through branch, move and integration history.
+- Revision-to-revision and working-text comparisons, including multiple
+  unsaved buffers, plus asynchronous preparation for native Ediff.
 
 ## Requirements
 
@@ -101,6 +103,8 @@ Use `M-x diff-hl-next-hunk` and `M-x diff-hl-previous-hunk` to navigate changes.
 | Submitted changes affecting this file | `M-x vc-p4-changes` |
 | Describe a submitted changelist | `M-x vc-p4-describe-change` |
 | Annotate the synced revision | `C-x v g` (`vc-annotate`) |
+| Compare revisions or unsaved working text | `M-x vc-p4-compare` |
+| Ediff revisions or unsaved working text | `M-x vc-p4-ediff`, or `M-x vc-ediff` |
 | Cancel this file's operation | `M-x vc-p4-cancel-operation` |
 
 In the history buffer, `n` and `p` move between entries; `f` opens the entry's
@@ -116,6 +120,21 @@ In annotation, `f` opens a line's originating file revision, `l` shows its log,
 and `C-c C-d` describes its originating changelist. Native annotation's `p`/`n`
 commands browse older/newer revisions. The default is the file's HAVE revision;
 unsaved working edits remain intact.
+
+Comparison prompts accept `#revision`, `//depot/path#revision` and `@changelist`.
+Leave the first operand empty for each file's HAVE revision, and the second for
+working text. `vc-p4-compare` includes the complete contents of visiting buffers,
+even when narrowed, and can compare an explicit fileset from Lisp. A changed
+source invalidates a pending working-text comparison; fixed historical operands
+remain independent of later working edits. `g` captures fresh working text.
+
+Native `vc-ediff` and `vc-version-ediff` use asynchronous P4 preparation too.
+Ediff compares decoded snapshots, leaving working buffers and files untouched.
+It starts only while the initiating source and focus remain current; otherwise
+run it again. Unchanged snapshots are cleaned up on quit; an edited snapshot is
+retained. Ediff requires text; use `vc-p4-compare` for byte-level or binary
+differences. Files with different buffer-local P4 settings need separate
+working-text requests. Ediff compares one file at a time.
 
 Commands return while P4 runs. Checkout, registration and interactive revert
 continue automatically when required metadata arrives. Editing the initiating
@@ -164,7 +183,7 @@ For a guided check and uninstall instructions, see
 
 ## Limitations
 
-- Submit, changelist management and `vc-dir` are not implemented yet.
+- Submit, pending changelist management and `vc-dir` are not implemented yet.
 - File operations support individual local paths. Directory operations,
   cross-workspace moves and revision-changing checkout use the P4 CLI.
 - P4 revert confirms the files to discard without a synchronous diff preview.

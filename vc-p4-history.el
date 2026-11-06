@@ -148,6 +148,7 @@
                         :identity (concat depot "#" revision)
                         :change (vc-p4-history--field record "change" index)
                         :action (vc-p4-history--field record "action" index)
+                        :type (vc-p4-history--field record "type" index)
                         :user (vc-p4-history--field record "user" index)
                         :time (vc-p4-history--field record "time" index)
                         :description (vc-p4-history--field record "desc" index)
@@ -228,7 +229,9 @@
   (let ((pattern (if (string-prefix-p "//" revision)
                      (concat "^Revision: " (regexp-quote revision) "$")
                    (concat "^Revision: .+#" (regexp-quote (string-remove-prefix "#" revision)) "$"))))
-    (when (re-search-forward pattern nil t) (beginning-of-line))))
+    (when (re-search-forward pattern nil t)
+      (beginning-of-line)
+      t)))
 
 (defun vc-p4-history--adjacent (file revision offset)
   "Return FILE's displayed ancestor next to REVISION by OFFSET."
@@ -318,6 +321,14 @@
     (when (eq vc-p4-status 'error) (signal 'vc-p4-error (list vc-p4-last-error)))
     (or bytes (signal 'vc-p4-pending (list file revision)))))
 
+(defun vc-p4-history--insert-bytes (bytes file)
+  "Insert and decode historical BYTES for FILE without associating a disk file."
+  (insert bytes)
+  (decode-coding-inserted-region (point-min) (point-max) file)
+  (after-insert-file-set-coding (buffer-size))
+  (let ((buffer-file-name file) (enable-local-variables nil))
+    (delay-mode-hooks (set-auto-mode))))
+
 (defun vc-p4-history--find-revision (original file revision &optional backend)
   "Return an asynchronous P4 revision buffer, or call ORIGINAL for BACKEND."
   (if (not (eq (or backend (vc-backend file)) 'P4))
@@ -355,11 +366,7 @@
                                                   (replace-regexp-in-string "#[0-9]+\\'" "" target))))
              (list (vc-p4-history--bytes file target) rows target)))
          (lambda (data)
-           (insert (car data))
-           (decode-coding-inserted-region (point-min) (point-max) file)
-           (after-insert-file-set-coding (buffer-size))
-           (let ((buffer-file-name file) (enable-local-variables nil))
-             (delay-mode-hooks (set-auto-mode)))
+           (vc-p4-history--insert-bytes (car data) file)
            (setq-local vc-p4-history--file file
                        vc-p4-history--entries (cadr data)
                        vc-p4-history--depot (plist-get (car (cadr data)) :depot)
