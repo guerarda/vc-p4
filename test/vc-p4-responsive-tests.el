@@ -53,6 +53,22 @@
              (kill-buffer buffer))
            (vc-file-clearprops file))))))
 
+(ert-deftest vc-p4-input-show-hunk-does-not-block-or-display-after-typing ()
+  (require 'diff-hl-show-hunk)
+  (vc-p4-test-faults
+    (save-window-excursion
+      (find-file file)
+      (vc-p4-test-await (lambda () (eq (vc-file-getprop file 'vc-state) 'up-to-date)))
+      (goto-char (point-min)) (forward-line 1)
+      (delete-region (point) (line-end-position)) (insert "changed")
+      (setq-local diff-hl-mode t)
+      (vc-p4-gutter--reconcile '((2 1 1 change)) nil)
+      (setenv "VC_P4_FAULT_DELAY" "0.6")
+      (let ((diff-hl-show-hunk-function (lambda (&rest _) (ert-fail "Popup after typing"))))
+        (vc-p4-test-queued-input #'diff-hl-show-hunk)
+        (vc-p4-test-await (lambda () (null vc-p4--diff-tasks)))
+        (should (string-match-p "typed" (buffer-string)))))))
+
 (ert-deftest vc-p4-input-cold-visit-and-discovery ()
   (vc-p4-test-faults
     (setenv "VC_P4_FAULT_DELAY" "0.6")

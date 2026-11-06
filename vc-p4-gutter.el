@@ -24,6 +24,12 @@
 (declare-function diff-hl--resolve "diff-hl")
 (declare-function diff-hl-adjust-changes "diff-hl")
 (declare-function diff-hl--autohide-margin "diff-hl")
+(declare-function vc-p4--diff-async "vc-p4")
+(declare-function vc-p4--gutter-destination "vc-p4")
+(declare-function diff-hl-find-current-hunk "diff-hl")
+(declare-function diff-hl-diff-skip-to "diff-hl")
+(defvar diff-hl-reference-revision)
+(defvar vc-p4--diff-owner-task)
 
 (defcustom vc-p4-gutter-side 'auto
   "Side for P4 markers.
@@ -32,6 +38,58 @@ the opposite side.  Placement depends on the enabled diagnostic mode, never
 on whether an individual diagnostic is currently visible."
   :type '(choice (const auto) (const left) (const right)) :group 'vc-p4)
 (defvar-local vc-p4-gutter--serial 0)
+(defvar-local vc-p4-gutter--show-serial 0)
+(defvar vc-p4-gutter--show-diff nil)
+
+(defun vc-p4-gutter--show-hunk-diff (original)
+  "Give ORIGINAL's viewer the completed P4 diff during a hunk display."
+  (if (not vc-p4-gutter--show-diff) (funcall original)
+    (let ((line (line-number-at-pos)))
+      (with-current-buffer vc-p4-gutter--show-diff
+        (diff-hl-diff-skip-to line))
+      vc-p4-gutter--show-diff)))
+
+(defun vc-p4-gutter--show-hunk (original)
+  "Show a P4 hunk through ORIGINAL only after its async diff is complete."
+  (if (not (and buffer-file-name (eq (vc-backend buffer-file-name) 'P4)))
+      (funcall original)
+    (diff-hl-find-current-hunk)
+    (let* ((source (current-buffer))
+           (window (selected-window))
+           (position (point))
+           (serial (cl-incf vc-p4-gutter--show-serial))
+           (output (get-buffer-create (vc-p4--gutter-destination " *p4-show-hunk*")))
+           (vc-diff-switches '("-U0" "--strip-trailing-cr"))
+           (snapshot (when (buffer-modified-p)
+                       (save-restriction
+                         (widen)
+                         (encode-coding-string
+                          (buffer-substring-no-properties (point-min) (point-max))
+                          buffer-file-coding-system)))))
+      (vc-p4--diff-async (list buffer-file-name) diff-hl-reference-revision nil output snapshot)
+      (let* ((task (buffer-local-value 'vc-p4--diff-owner-task output))
+             (gate (get-buffer-process output))
+             (sentinel (process-sentinel gate)))
+        (set-process-sentinel
+         gate
+         (lambda (process event)
+           (funcall sentinel process event)
+           (when (and (eq (process-status process) 'exit)
+                      (zerop (process-exit-status process))
+                      (buffer-live-p source) (window-live-p window)
+                      (eq window (selected-window))
+                      (eq (window-buffer window) source))
+             (with-current-buffer source
+               (when (and diff-hl-mode (= serial vc-p4-gutter--show-serial)
+                          (= position (point)) (vc-p4--diff-valid-p task)
+                          (eq (vc-backend buffer-file-name) 'P4))
+                 (let ((vc-p4-gutter--show-diff output))
+                   (condition-case err (funcall original)
+                     (error (message "%s" (error-message-string err))))))))))))))
+
+(with-eval-after-load 'diff-hl-show-hunk
+  (advice-add 'diff-hl-show-hunk :around #'vc-p4-gutter--show-hunk)
+  (advice-add 'diff-hl-show-hunk--compute-diffs :around #'vc-p4-gutter--show-hunk-diff))
 
 (defun vc-p4-gutter--side ()
   "Choose a stable display side independent of diagnostic arrivals."

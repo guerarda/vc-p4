@@ -41,8 +41,11 @@ mutation has finished, explicitly reload the backend and its companion modules:
    the buffer should become writable. Change one line and save. Expect one
    change marker at that line. Insert/delete a line and check the corresponding
    markers. `M-x diff-hl-next-hunk` should navigate to a changed hunk.
+   At that hunk, `M-x diff-hl-show-hunk` should display its inline diff once ready,
+   without a "No next hunk" error. Dismiss it and repeat after another saved edit.
 3. Run `M-x diff-hl-flydiff-mode` to enable unsaved highlighting. Make another
-   edit without saving; expect its marker after the idle delay. This mode is optional.
+   edit without saving; expect its marker after the idle delay. Check
+   `M-x diff-hl-show-hunk` on that unsaved change too. This mode is optional.
 4. Save the disposable edits, then use `C-x v u` and confirm the selected test
    file. Expect its synced contents, the appropriate read-only flag, and no
    markers after completion. Without further typing, the buffer should show no

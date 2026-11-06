@@ -60,6 +60,31 @@
     (vc-p4-gutter-update)
     (should-not (vc-p4-gutter-hunks))))
 
+(ert-deftest vc-p4-real-gutter-inline-hunk-saved-and-unsaved ()
+  (require 'diff-hl-show-hunk)
+  (require 'diff-hl-show-hunk-inline)
+  (vc-p4-gutter-with-file
+    (save-window-excursion
+      (switch-to-buffer buffer)
+      (goto-char (point-min)) (forward-line 1)
+      (delete-region (point) (line-end-position)) (insert "changed")
+      (diff-hl-flydiff-mode 1)
+      (dolist (saved '(nil t))
+        (when saved (save-buffer))
+        (vc-p4-gutter-update)
+        (goto-char (point-min)) (forward-line 1)
+        ;; Force the popup pipeline to retrieve expired metadata as well.
+        (maphash (lambda (_ entry) (setf (vc-p4--entry-time entry) 0)) vc-p4--metadata)
+        (unwind-protect
+            (progn
+              (call-interactively #'diff-hl-show-hunk)
+              (vc-p4-integration-drain)
+              (should (overlayp diff-hl-show-hunk-inline--current-popup))
+              (should (equal diff-hl-show-hunk--original-content "two"))
+              (with-current-buffer diff-hl-show-hunk-buffer-name
+                (should (string-match-p "-two\n\\+changed" (buffer-string)))))
+          (diff-hl-show-hunk-hide))))))
+
 (ert-deftest vc-p4-real-gutter-native-revert-converges-without-full-refresh ()
   (vc-p4-gutter-with-file
     (goto-char (point-min)) (forward-line 1)

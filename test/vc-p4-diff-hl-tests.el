@@ -92,3 +92,94 @@
         (delete-directory temporary-file-directory t)))))
 
 (provide 'vc-p4-diff-hl-tests)
+
+(ert-deftest vc-p4-diff-hl-show-hunk-displays-saved-and-unsaved-changes ()
+  (require 'diff-hl-show-hunk)
+  (require 'diff-hl-show-hunk-inline)
+  (dolist (saved '(t nil))
+    (vc-p4-test-async
+      (vc-p4-test-with-file (if saved "one\nchanged\nthree\n" "one\ntwo\nthree\n")
+        (let ((vc-handled-backends nil))
+          (cl-letf (((symbol-function 'vc-p4--stat)
+                     (lambda (&rest _) '((haveRev . "7") (headRev . "8"))))
+                    ((symbol-function 'vc-p4--base)
+                     (lambda (_ revision)
+                       (should (equal revision "7")) "one\ntwo\nthree\n")))
+            (save-window-excursion
+              (switch-to-buffer (find-file-noselect file))
+              (vc-file-setprop file 'vc-backend 'P4)
+              (setq-local diff-hl-mode t)
+              (unless saved
+                (goto-char (point-min)) (forward-line 1)
+                (delete-region (point) (line-end-position)) (insert "changed"))
+              (vc-p4-gutter--reconcile '((2 1 1 change)) nil)
+              (goto-char (point-min)) (forward-line 1)
+              (unwind-protect
+                  (progn
+                    (cl-letf (((symbol-function 'call-process)
+                               (lambda (&rest _) (ert-fail "Synchronous hunk diff"))))
+                      (call-interactively #'diff-hl-show-hunk))
+                    (vc-p4-test-await
+                     (lambda () (and (boundp 'diff-hl-show-hunk-inline--current-popup)
+                                     (overlayp diff-hl-show-hunk-inline--current-popup))))
+                    (should (equal diff-hl-show-hunk--original-content "two"))
+                    (with-current-buffer diff-hl-show-hunk-buffer-name
+                      (should (string-match-p "-two\n\\+changed" (buffer-string)))))
+                (diff-hl-show-hunk-hide)))))))))
+
+(ert-deftest vc-p4-diff-hl-show-hunk-discards-obsolete-requests ()
+  (require 'diff-hl-show-hunk)
+  (dolist (change '(text point window mode context close))
+    (vc-p4-test-async
+      (vc-p4-test-with-file "one\nchanged\nthree\n"
+        (let ((vc-handled-backends nil) ready shown)
+          (cl-letf (((symbol-function 'vc-p4--stat)
+                     (lambda (&rest _) '((haveRev . "7"))))
+                    ((symbol-function 'vc-p4--base)
+                     (lambda (&rest _) (when ready "one\ntwo\nthree\n"))))
+            (save-window-excursion
+              (switch-to-buffer (find-file-noselect file))
+              (vc-file-setprop file 'vc-backend 'P4)
+              (setq-local diff-hl-mode t)
+              (vc-p4-gutter--reconcile '((2 1 1 change)) nil)
+              (goto-char (point-min)) (forward-line 1)
+              (vc-p4-gutter--show-hunk (lambda () (setq shown t)))
+              (let ((gate (vc-p4--diff-task-gate (car vc-p4--diff-tasks))))
+                (pcase change
+                  ('text (insert "new typing"))
+                  ('point (goto-char (point-max)))
+                  ('window (switch-to-buffer (get-buffer-create " *p4-other*")))
+                  ('mode (setq diff-hl-mode nil))
+                  ('context (setq-local vc-p4-program "/different/p4"))
+                  ('close (kill-buffer (current-buffer))))
+                (setq ready t)
+                (vc-p4-test-await (lambda () (not (process-live-p gate))))
+                (should-not shown)))))))))
+
+(ert-deftest vc-p4-diff-hl-show-hunk-only-displays-latest-request ()
+  (require 'diff-hl-show-hunk)
+  (vc-p4-test-async
+    (vc-p4-test-with-file "one\nchanged\nthree\n"
+      (let ((vc-handled-backends nil) ready (shown 0))
+        (cl-letf (((symbol-function 'vc-p4--stat) (lambda (&rest _) '((haveRev . "7"))))
+                  ((symbol-function 'vc-p4--base)
+                   (lambda (&rest _) (when ready "one\ntwo\nthree\n"))))
+          (save-window-excursion
+            (switch-to-buffer (find-file-noselect file))
+            (vc-file-setprop file 'vc-backend 'P4)
+            (setq-local diff-hl-mode t)
+            (vc-p4-gutter--reconcile '((2 1 1 change)) nil)
+            (goto-char (point-min)) (forward-line 1)
+            (vc-p4-gutter--show-hunk (lambda () (ert-fail "Obsolete popup")))
+            (vc-p4-gutter--show-hunk (lambda () (cl-incf shown)))
+            (should (= (length vc-p4--diff-tasks) 1))
+            (setq ready t)
+            (vc-p4-test-await (lambda () (> shown 0)))
+            (should (= shown 1))))))))
+
+(ert-deftest vc-p4-diff-hl-show-hunk-delegates-other-backends ()
+  (vc-p4-test-with-file "text\n"
+    (with-temp-buffer
+      (setq buffer-file-name file)
+      (vc-file-setprop file 'vc-backend 'Git)
+      (should (eq (vc-p4-gutter--show-hunk (lambda () 'delegated)) 'delegated)))))

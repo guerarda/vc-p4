@@ -9,10 +9,10 @@ Validate other environments using the workspace smoke check.
 ## Checks
 
 - Warning-free byte compilation.
-- 88 backend/process/operation tests; 112 total including three real diff-hl
-  consumer tests, nine incremental-rendering tests and twelve fault/input tests.
-- 27 disposable-server tests covering actual metadata, byte retrieval, state,
-  mappings, native file operations and nine gutter scenarios. Run against both
+- 88 backend/process/operation tests; 117 total including seven real diff-hl
+  consumer tests, nine incremental-rendering tests and thirteen fault/input tests.
+- 28 disposable-server tests covering actual metadata, byte retrieval, state,
+  mappings, native file operations and ten gutter scenarios. Run against both
   case-sensitive and case-insensitive servers; the alias-case assertion applies
   only to the latter.
 - Fixture clients use LineEnd local, classic views with exclusions, noallwrite
@@ -93,6 +93,13 @@ Pending and error states retain the last display, with mode-line status. A clean
 result removes obsolete markers. Mode disable and workspace changes invalidate
 the old display. The save regression checks overlay identity through completion,
 not merely during the pending interval, with flydiff both enabled and disabled.
+
+`diff-hl-show-hunk` uses the same asynchronous P4 diff pipeline for saved and
+unsaved text.  Its normal inline viewer receives a completed diff, rather than
+reading an empty or still-pending output buffer.  A changed source, cursor,
+window, backend or workspace prevents an obsolete popup from appearing; repeated
+requests show only the latest result.  Other backends retain their normal path.
+Tests exercise the actual inline viewer, expired metadata and queued typing.
 
 Optional actual Flycheck coexistence test:
 
