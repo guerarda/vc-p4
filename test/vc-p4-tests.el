@@ -229,6 +229,136 @@
       (accept-process-output nil 0.01))
     (should (funcall predicate))))
 
+(defconst vc-p4-test-diff-worker
+  (expand-file-name "fault-worker.py" (file-name-directory load-file-name)))
+
+(defun vc-p4-test-coded-diff (file async coding &optional rev1 rev2)
+  "Return FILE's real diff, starting under CODING and completing outside it."
+  (with-temp-buffer
+    (let ((coding-system-for-read coding))
+      (vc-p4-diff (list file) rev1 rev2 (current-buffer) async))
+    (when async
+      (vc-p4-test-await (lambda () (not (get-buffer-process (current-buffer))))))
+    (buffer-string)))
+
+(ert-deftest vc-p4-diff-native-windows-output-decoding ()
+  ;; Exercise VC's platform-specific decoding selection and its real completion
+  ;; path.  Only P4 retrieval and the diff executable's output platform are fake.
+  (vc-p4-test-async
+    (vc-p4-test-with-file "one\nchanged\nthree\n"
+      (let ((vc-p4-diff-program vc-p4-test-diff-worker)
+            (process-environment (copy-sequence process-environment))
+            (vc-diff-switches '("-U0"))
+            (vc-diff-added-files nil)
+            (host-system system-type)
+            (select-coding (symbol-function 'vc-coding-system-for-diff))
+            (call-backend (symbol-function 'vc-call-backend)))
+        (setenv "VC_P4_FAULT_MODE" "dos-diff")
+        (cl-letf (((symbol-function 'vc-p4-working-revision) (lambda (_) "7"))
+                  ((symbol-function 'vc-p4--base)
+                   (lambda (_ rev) (should (equal rev "7")) "one\ntwo\nthree\n"))
+                  ;; Emulate only VC's Windows output policy; file primitives
+                  ;; and the backend still run on the actual host platform.
+                  ((symbol-function 'vc-coding-system-for-diff)
+                   (lambda (&rest args)
+                     (let ((system-type host-system)) (apply select-coding args))))
+                  ((symbol-function 'vc-call-backend)
+                   (lambda (&rest args)
+                     (let ((system-type host-system)) (apply call-backend args)))))
+          (dolist (async '(nil t))
+            (save-window-excursion
+              (with-temp-buffer
+                (let ((output (current-buffer))
+                      (system-type 'windows-nt))
+                  (vc-diff-internal async (list 'P4 (list file)) nil nil nil output))
+                (when async
+                  (vc-p4-test-await
+                   (lambda () (not (get-buffer-process (current-buffer))))))
+                (should (string-match-p (regexp-quote "@@ -2 +2 @@\n-two\n+changed\n")
+                                        (buffer-string)))
+                (should-not (string-match-p "\r" (buffer-string))))))
+          (should (equal (vc-p4--local-bytes file) "one\nchanged\nthree\n")))))))
+
+(ert-deftest vc-p4-diff-decoding-preserves-content-carriage-returns ()
+  (vc-p4-test-async
+    ;; LF-to-CRLF alone is a real byte change.  DOS process-output decoding must
+    ;; remove just the transport CR, retaining the additional source-file CR.
+    (vc-p4-test-with-file "one\r\ntwo\r\n"
+      (let ((vc-p4-diff-program vc-p4-test-diff-worker)
+            (process-environment (copy-sequence process-environment)))
+        (setenv "VC_P4_FAULT_MODE" "dos-diff")
+        (cl-letf (((symbol-function 'vc-p4-working-revision) (lambda (_) "1"))
+                  ((symbol-function 'vc-p4--base) (lambda (&rest _) "one\ntwo\n")))
+          (dolist (async '(nil t))
+            (let ((text (vc-p4-test-coded-diff file async 'utf-8-dos)))
+              (should (string-match-p (regexp-quote "-one\n-two\n+one\r\n+two\r\n") text))))
+          (should (equal (vc-p4--local-bytes file) "one\r\ntwo\r\n")))))))
+
+(ert-deftest vc-p4-diff-decoding-preserves-mixed-endings-and-final-cr ()
+  (vc-p4-test-async
+    (vc-p4-test-with-file "one\r\nchanged\nlast\r"
+      (let ((vc-p4-diff-program vc-p4-test-diff-worker)
+            (process-environment (copy-sequence process-environment)))
+        (setenv "VC_P4_FAULT_MODE" "dos-diff")
+        (cl-letf (((symbol-function 'vc-p4-working-revision) (lambda (_) "1"))
+                  ((symbol-function 'vc-p4--base)
+                   (lambda (&rest _) "one\r\ntwo\nlast\r")))
+          (dolist (async '(nil t))
+            (let ((text (vc-p4-test-coded-diff file async 'utf-8-dos)))
+              (should (string-match-p (regexp-quote " one\r\n-two\n+changed\n last\r\n") text))
+              (should (string-match-p "No newline at end of file" text)))))))))
+
+(ert-deftest vc-p4-diff-honors-explicit-output-charset-and-raw-coding ()
+  (vc-p4-test-async
+    (vc-p4-test-with-file ""
+      (let ((vc-p4-diff-program vc-p4-test-diff-worker)
+            (process-environment (copy-sequence process-environment))
+            (old (unibyte-string ?c ?a ?f 233 ?\n))
+            (new (unibyte-string ?t ?h 233 ?\n)))
+        (setenv "VC_P4_FAULT_MODE" "dos-diff")
+        (let ((coding-system-for-write 'no-conversion))
+          (write-region new nil file nil 'silent))
+        (cl-letf (((symbol-function 'vc-p4--base)
+                   (lambda (_ rev) (if (equal rev "1") old new))))
+          (dolist (async '(nil t))
+            (should (string-match-p
+                     (regexp-quote "-café\n+thé\n")
+                     (vc-p4-test-coded-diff file async 'iso-latin-1-dos "1" "2")))
+            (should (string-match-p
+                     (regexp-quote (concat "-" (substring old 0 -1) "\r\n"))
+                     ;; Raw coding retains both transport and content bytes.
+                     (vc-p4-test-coded-diff file async 'no-conversion "1" "2")))))))))
+
+(ert-deftest vc-p4-diff-default-decoding-retains-crlf-source ()
+  (vc-p4-test-async
+    (vc-p4-test-with-file "one\r\nchanged\r\n"
+      (cl-letf (((symbol-function 'vc-p4-working-revision) (lambda (_) "1"))
+                ((symbol-function 'vc-p4--base) (lambda (&rest _) "one\r\ntwo\r\n")))
+        (dolist (async '(nil t))
+          (should (string-match-p
+                   (regexp-quote "-two\r\n+changed\r\n")
+                   (vc-p4-test-coded-diff file async nil))))))))
+
+(ert-deftest vc-p4-diff-new-output-coding-supersedes-pending-request ()
+  (vc-p4-test-async
+    (vc-p4-test-with-file "changed\n"
+      (let ((vc-p4-diff-program vc-p4-test-diff-worker)
+            (process-environment (copy-sequence process-environment)))
+        (setenv "VC_P4_FAULT_MODE" "dos-diff")
+        (cl-letf (((symbol-function 'vc-p4-working-revision) (lambda (_) "1"))
+                  ((symbol-function 'vc-p4--base) (lambda (&rest _) "original\n")))
+          (with-temp-buffer
+            (let ((coding-system-for-read 'utf-8-unix))
+              (vc-p4-diff (list file) nil nil (current-buffer) t))
+            (let ((obsolete (car vc-p4--diff-tasks)))
+              (let ((coding-system-for-read 'utf-8-dos))
+                (vc-p4-diff (list file) nil nil (current-buffer) t))
+              (should (vc-p4--diff-task-done obsolete))
+              (should (eq (process-status (vc-p4--diff-task-gate obsolete)) 'signal)))
+            (vc-p4-test-await (lambda () (not (get-buffer-process (current-buffer)))))
+            (should (string-match-p (regexp-quote "-original\n+changed\n") (buffer-string)))
+            (should-not (string-match-p "\r" (buffer-string)))))))))
+
 (ert-deftest vc-p4-async-preserves-bytes-arguments-and-stderr ()
   (vc-p4-test-async
     (let* (result

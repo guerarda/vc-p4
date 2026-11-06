@@ -96,36 +96,41 @@
 (ert-deftest vc-p4-diff-hl-show-hunk-displays-saved-and-unsaved-changes ()
   (require 'diff-hl-show-hunk)
   (require 'diff-hl-show-hunk-inline)
-  (dolist (saved '(t nil))
-    (vc-p4-test-async
-      (vc-p4-test-with-file (if saved "one\nchanged\nthree\n" "one\ntwo\nthree\n")
-        (let ((vc-handled-backends nil))
-          (cl-letf (((symbol-function 'vc-p4--stat)
-                     (lambda (&rest _) '((haveRev . "7") (headRev . "8"))))
-                    ((symbol-function 'vc-p4--base)
-                     (lambda (_ revision)
-                       (should (equal revision "7")) "one\ntwo\nthree\n")))
-            (save-window-excursion
-              (switch-to-buffer (find-file-noselect file))
-              (vc-file-setprop file 'vc-backend 'P4)
-              (setq-local diff-hl-mode t)
-              (unless saved
-                (goto-char (point-min)) (forward-line 1)
-                (delete-region (point) (line-end-position)) (insert "changed"))
-              (vc-p4-gutter--reconcile '((2 1 1 change)) nil)
-              (goto-char (point-min)) (forward-line 1)
-              (unwind-protect
-                  (progn
-                    (cl-letf (((symbol-function 'call-process)
-                               (lambda (&rest _) (ert-fail "Synchronous hunk diff"))))
-                      (call-interactively #'diff-hl-show-hunk))
-                    (vc-p4-test-await
-                     (lambda () (and (boundp 'diff-hl-show-hunk-inline--current-popup)
-                                     (overlayp diff-hl-show-hunk-inline--current-popup))))
-                    (should (equal diff-hl-show-hunk--original-content "two"))
-                    (with-current-buffer diff-hl-show-hunk-buffer-name
-                      (should (string-match-p "-two\n\\+changed" (buffer-string)))))
-                (diff-hl-show-hunk-hide)))))))))
+  (dolist (case '((t) (nil) (t . dos) (nil . dos)))
+    (let ((saved (car case))
+          (coding-system-for-read (when (cdr case) 'utf-8-dos))
+          (vc-p4-diff-program (if (cdr case) vc-p4-test-diff-worker "diff"))
+          (process-environment (copy-sequence process-environment)))
+      (setenv "VC_P4_FAULT_MODE" (if (cdr case) "dos-diff" "normal"))
+      (vc-p4-test-async
+	(vc-p4-test-with-file (if saved "one\nchanged\nthree\n" "one\ntwo\nthree\n")
+          (let ((vc-handled-backends nil))
+            (cl-letf (((symbol-function 'vc-p4--stat)
+                       (lambda (&rest _) '((haveRev . "7") (headRev . "8"))))
+                      ((symbol-function 'vc-p4--base)
+                       (lambda (_ revision)
+			 (should (equal revision "7")) "one\ntwo\nthree\n")))
+              (save-window-excursion
+		(switch-to-buffer (find-file-noselect file))
+		(vc-file-setprop file 'vc-backend 'P4)
+		(setq-local diff-hl-mode t)
+		(unless saved
+                  (goto-char (point-min)) (forward-line 1)
+                  (delete-region (point) (line-end-position)) (insert "changed"))
+		(vc-p4-gutter--reconcile '((2 1 1 change)) nil)
+		(goto-char (point-min)) (forward-line 1)
+		(unwind-protect
+                    (progn
+                      (cl-letf (((symbol-function 'call-process)
+				 (lambda (&rest _) (ert-fail "Synchronous hunk diff"))))
+			(call-interactively #'diff-hl-show-hunk))
+                      (vc-p4-test-await
+                       (lambda () (and (boundp 'diff-hl-show-hunk-inline--current-popup)
+                                       (overlayp diff-hl-show-hunk-inline--current-popup))))
+                      (should (equal diff-hl-show-hunk--original-content "two"))
+                      (with-current-buffer diff-hl-show-hunk-buffer-name
+			(should (string-match-p "-two\n\\+changed" (buffer-string)))))
+                  (diff-hl-show-hunk-hide))))))))))
 
 (ert-deftest vc-p4-diff-hl-show-hunk-discards-obsolete-requests ()
   (require 'diff-hl-show-hunk)

@@ -11,7 +11,7 @@ Validate other environments using the workspace smoke check.
 ## Checks
 
 - Warning-free byte compilation.
-- 88 backend/process/operation tests; 117 total including seven real diff-hl
+- 94 backend/process/operation tests; 123 total including seven real diff-hl
   consumer tests, nine incremental-rendering tests and thirteen fault/input tests.
 - 28 disposable-server tests covering actual metadata, byte retrieval, state,
   mappings, native file operations and ten gutter scenarios. Run against both
@@ -103,6 +103,16 @@ window, backend or workspace prevents an obsolete popup from appearing; repeated
 requests show only the latest result.  Other backends retain their normal path.
 Tests exercise the actual inline viewer, expired metadata and queued typing.
 
+Explicit diffs honor the output coding selected by native VC, including DOS
+process-output decoding on Windows. Asynchronous tasks capture that choice
+before the caller returns. Comparison inputs and pristine caches retain their
+original bytes; genuine carriage returns and LF/CRLF differences remain in the
+diff. Synthetic tests exercise native VC's Windows decoding policy with CRLF
+process output, mixed source endings, literal carriage returns, missing final
+newlines, explicit character sets and raw output. Saved and unsaved inline
+previews also run with simulated DOS output. These tests run on macOS; they
+do not establish acceptance on a Windows installation.
+
 Optional actual Flycheck coexistence test:
 
 ```sh
@@ -129,7 +139,7 @@ on a cache miss; the automatic flydiff path uses the asynchronous pipeline inste
 Explicit synchronous local diffs require cached bases. Background worker timeouts
 are controlled by `vc-p4-command-timeout` (10 seconds per worker).
 
-Not yet covered: Windows line-ending translation, Unicode-mode servers and
+Not yet covered on actual hosts: Windows line-ending translation, Unicode-mode servers and
 P4CHARSET combinations, streams/complex overlays, TRAMP,
 large-repository performance, other server builds and GUI appearance.
 Binary differences produce no textual hunks. UTF-16 baselines are byte-correct,

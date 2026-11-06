@@ -2,6 +2,7 @@
 """Deterministic slow/failing P4 and diff substitute for responsiveness tests."""
 import json
 import os
+import subprocess
 import sys
 import time
 
@@ -30,4 +31,9 @@ elif args and args[0] in {"fstat", "where", "info", "client", "print"}:
             record["action"] = os.environ["VC_P4_FAULT_ACTION"]
         print(json.dumps(record))
 else:
+    if mode == "dos-diff":
+        # Simulate Windows text-mode stdout, independently of input file bytes.
+        result = subprocess.run(["diff", *sys.argv[1:]], stdout=subprocess.PIPE)
+        sys.stdout.buffer.write(result.stdout.replace(b"\n", b"\r\n"))
+        sys.exit(result.returncode)
     os.execvp("diff", ["diff", *sys.argv[1:]])

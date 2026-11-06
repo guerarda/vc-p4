@@ -55,6 +55,22 @@ mutation has finished, explicitly reload the backend and its companion modules:
    local edits are compared with have, not head. No need to change production
    history or sync backwards just to manufacture this case; it is automated.
 
+## Windows explicit diff check
+
+After loading the updated modules on Windows, change one line in a disposable
+tracked text file and save it. Run `M-x vc-diff`. Expect readable headers and
+hunk lines without extra `^M` from the diff executable's CRLF output. The
+changed line should still appear correctly. Actual carriage returns in file
+content or a genuine LF/CRLF difference may remain visible in a byte-preserving
+diff; do not change the file's coding or the client's LineEnd setting to make
+this check pass.
+
+Report whether this resolves the original display problem. If it persists,
+include Emacs, P4 and diff executable versions, `buffer-file-coding-system`
+from the editing buffer, the client's LineEnd setting, and whether `^M` occurs
+in diff headers as well as content lines. Sanitize private paths and server
+details. Revert only the disposable edit after checking.
+
 ## Native editing lifecycle
 
 Use only a disposable tracked file with no unrelated work. Check `p4 opened`
