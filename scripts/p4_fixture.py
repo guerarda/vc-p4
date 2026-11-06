@@ -92,6 +92,7 @@ def run_fixture(args):
                     "stale.txt": b"original\n",
                     "café.txt": b"unicode path\n",
                     "gutter.txt": b"one\ntwo\nthree\n",
+                    "history-source.txt": b"history one\n",
                     "opened.txt": b"unchanged\n",
                     "unopened.txt": b"original\n",
                     "missing.txt": b"missing later\n",
@@ -113,6 +114,19 @@ def run_fixture(args):
                 p4run("reopen", "-t", "text+l", str(root / "alice" / "exclusive.txt"))
                 p4run("reopen", "-t", "text+l", str(root / "alice" / "ops-lock.txt"))
                 p4run("submit", "-d", "fixture: initial contents")
+                # Submitted move/integration ancestry, independent of lifecycle files.
+                history_source = root / "alice" / "history-source.txt"
+                p4run("edit", str(history_source))
+                history_source.write_bytes(b"history two\n")
+                p4run("submit", "-d", "fixture: history second revision\n\nfull description")
+                history_branch = root / "alice" / "history-branch.txt"
+                p4run("integrate", str(history_source), str(history_branch))
+                p4run("submit", "-d", "fixture: branch history")
+                p4run("edit", str(history_branch))
+                history_branch.write_bytes(b"branch edit\n")
+                history_moved = root / "alice" / "history-moved.txt"
+                p4run("move", str(history_branch), str(history_moved))
+                p4run("submit", "-d", "fixture: move edited history")
                 p4run("sync", "//depot/...", user="bob")
                 bob_file = root / "bob" / "sample.txt"
                 p4run("edit", str(bob_file), user="bob")
@@ -148,7 +162,7 @@ def run_fixture(args):
                               if args.diff_hl_dir else [])
                 subprocess.run(
                     [emacs, "-Q", "--batch", "--eval", "(setq load-prefer-newer t)", "-L", str(REPO), "-L", str(REPO / "test"),
-                     "-l", "vc-p4-integration-tests", *extra_args, "-f", "ert-run-tests-batch-and-exit"],
+                     "-l", "vc-p4-integration-tests", "-l", "vc-p4-history-integration-tests", *extra_args, "-f", "ert-run-tests-batch-and-exit"],
                     cwd=root, env=test_env, check=True, timeout=60)
             finally:
                 process.terminate()

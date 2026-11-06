@@ -9,7 +9,8 @@ the `p4` command-line client and integrates with Emacs's built-in VC interface.
 
 **Status: experimental.** Gutter highlighting and asynchronous checkout, add,
 revert, delete and move are implemented through Emacs VC. Continue using the
-P4 CLI for submit, changelist management and other depot workflows.
+P4 CLI for submit, changelist management and other depot workflows. File
+history and read-only revision navigation are also available.
 
 ## Features
 
@@ -21,6 +22,8 @@ P4 CLI for submit, changelist management and other depot workflows.
 - Cached revision contents and explicit refresh after external P4 commands.
 - Background discovery, revision retrieval and gutter diffs with timeouts and cancellation.
 - Native VC file operations with deferred buffer updates and failure recovery.
+- Native file history, revision completion and read-only revision buffers,
+  including submitted move and integration ancestry.
 
 ## Requirements
 
@@ -91,7 +94,16 @@ Use `M-x diff-hl-next-hunk` and `M-x diff-hl-previous-hunk` to navigate changes.
 | Revert saved changes | `C-x v u` (`vc-revert`), with confirmation |
 | Delete a tracked file | `M-x vc-delete-file`, with confirmation |
 | Move a tracked or added file | `M-x vc-rename-file` |
+| File history | `C-x v l` (`vc-print-log`) |
+| View a revision | `C-x v ~` (`vc-revision-other-window`) |
 | Cancel this file's operation | `M-x vc-p4-cancel-operation` |
+
+In the history buffer, `n` and `p` move between entries; `f` opens the entry's
+revision. Revisions include their depot path, such as `//depot/file#3`, while
+submitted changelists are labeled `@123`. In a revision buffer, `C-c C-p` and
+`C-c C-n` visit older and newer content through the displayed ancestry. Deleted
+and purged revisions have no content to visit. These views fetch data in the
+background and do not sync, checkout or replace working-file text.
 
 Commands return while P4 runs. Checkout, registration and interactive revert
 continue automatically when required metadata arrives. Editing the initiating
@@ -153,6 +165,7 @@ For a guided check and uninstall instructions, see
   default). Failed queries back off for `vc-p4-retry-delay` (10 seconds).
   At most `vc-p4-max-processes` workers (default 4) run concurrently;
   `vc-p4-max-pending-diffs` limits pending diff pipelines (default 32).
+  `vc-p4-max-pending-views` similarly bounds history and revision views.
 - There is no background polling for external workspace changes.
 - Binary files and UTF-16 files do not produce textual gutter hunks. UTF-16
   pristine revision retrieval preserves the original bytes.
@@ -160,7 +173,7 @@ For a guided check and uninstall instructions, see
   have not been validated.
 
 Automated tests have run on macOS arm64 with Emacs 30.2 and 31.1, P4/P4D
-2024.2, and diff-hl 1.10.0, using classic workspaces with local line endings.
+2024.2, and diff-hl 1.11.2, using classic workspaces with local line endings.
 See [development notes](DEVELOPMENT.md) for the exact matrix and remaining
 validation scope.
 

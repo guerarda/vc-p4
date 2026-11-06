@@ -29,6 +29,7 @@ mutation has finished, explicitly reload the backend and its companion modules:
 (load-file "/path/to/p4vc/vc-p4.el")
 (load-file "/path/to/p4vc/vc-p4-ops.el")
 (load-file "/path/to/p4vc/vc-p4-gutter.el")
+(load-file "/path/to/p4vc/vc-p4-history.el")
 ```
 
 ## Five-minute check
@@ -70,6 +71,24 @@ include Emacs, P4 and diff executable versions, `buffer-file-coding-system`
 from the editing buffer, the client's LineEnd setting, and whether `^M` occurs
 in diff headers as well as content lines. Sanitize private paths and server
 details. Revert only the disposable edit after checking.
+
+## File history and revisions
+
+1. Visit a tracked file and run `C-x v l`. Check the revision, author, full
+   description and separately labeled changelist. Use `n`/`p` and `f` to open
+   an entry in a read-only revision buffer. No working-file changes are needed.
+2. In that revision buffer, use `C-c C-p` and `C-c C-n` to visit older/newer
+   contents. On a file with existing move/integration history, confirm the depot
+   paths stay distinct as navigation follows the displayed ancestry. The
+   disposable server fixture covers this when no convenient real file exists.
+3. From the working file, use `C-x v ~`. Completion accepts file revisions
+   (`3`, `#3`, or `//depot/path#3`) separately from changelists (`@123`). A cold
+   completion list loads asynchronously; another TAB can show newly loaded
+   candidates. Verify the chosen contents without saving or syncing anything.
+4. Leave a disposable unsaved edit in the working buffer while viewing history.
+   Confirm it remains intact. Closing a pending view must not produce a late
+   buffer switch or error popup. Report actual GUI behaviour separately from
+   automated validation.
 
 ## Native editing lifecycle
 

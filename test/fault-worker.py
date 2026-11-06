@@ -16,7 +16,7 @@ if mode in {"auth", "outage"}:
 args = [arg for arg in sys.argv[1:] if arg not in {"-Mj", "-ztag"}]
 if args and args[0] in {"edit", "add", "revert", "delete", "sync"}:
     print(json.dumps({"action": args[0], "clientFile": args[-1]}))
-elif args and args[0] in {"fstat", "where", "info", "client", "print"}:
+elif args and args[0] in {"fstat", "where", "info", "client", "print", "filelog"}:
     command = args[0]
     if command == "print":
         sys.stdout.buffer.write(b"one\ntwo\nthree\n")
@@ -26,6 +26,9 @@ elif args and args[0] in {"fstat", "where", "info", "client", "print"}:
             "where": {"path": args[-1]},
             "info": {"clientRoot": os.getcwd()},
             "client": {"Options": "allwrite"},
+            "filelog": {"depotFile": "//test/file", "rev0": "1", "change0": "17",
+                        "action0": "add", "user0": "alice", "time0": "1700000000",
+                        "desc0": "fixture history"},
         }[command]
         if command == "fstat" and os.environ.get("VC_P4_FAULT_ACTION"):
             record["action"] = os.environ["VC_P4_FAULT_ACTION"]

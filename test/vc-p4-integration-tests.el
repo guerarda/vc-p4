@@ -287,6 +287,7 @@
   (let ((deadline (+ (float-time) 10)))
     (while (and (< (float-time) deadline)
                 (or vc-p4--queue vc-p4--active vc-p4--diff-tasks
+                    (bound-and-true-p vc-p4-history--tasks)
                     vc-p4--dispatch-timer
                     (cl-some (lambda (buffer)
                                (or (buffer-local-value 'vc-p4--notice-timer buffer)
@@ -364,6 +365,7 @@
         (should (= 0 (vc-p4-diff (list file) nil nil (current-buffer))))))))
 
 (provide 'vc-p4-integration-tests)
+
 
 (ert-deftest vc-p4-real-server-root-and-new-file-discovery ()
   (let* ((dir (file-name-as-directory (getenv "VC_P4_TEST_ROOT")))

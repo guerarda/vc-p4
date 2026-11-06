@@ -417,6 +417,9 @@ Explicit invalidation is handled by `vc-p4-refresh', not by a wait here."
   "Return cached pristine bytes of FILE at REVISION, or nil while pending."
   (cond ((equal revision "0") "")
         ((null revision) nil)
+        ((and (stringp revision)
+              (string-match-p "\\`//[^\n\r]+#[0-9]+\\'" revision))
+         (vc-p4--cached file (list "print" "-q" "-o" "-" revision) t t))
         (t (when-let* ((depot (alist-get 'depotFile (vc-p4--stat file))))
              (vc-p4--cached
               file (list "print" "-q" "-o" "-"
@@ -940,6 +943,15 @@ cached baselines and may run local diff; automatic gutters always use ASYNC."
 (autoload 'vc-p4--check-operation-save "vc-p4-ops")
 (autoload 'vc-p4-edit "vc-p4-ops" nil t)
 (autoload 'vc-p4-cancel-operation "vc-p4-ops" nil t)
+
+(autoload 'vc-p4-print-log "vc-p4-history")
+(autoload 'vc-p4-log-view-mode "vc-p4-history")
+(autoload 'vc-p4-show-log-entry "vc-p4-history")
+(autoload 'vc-p4-previous-revision "vc-p4-history")
+(autoload 'vc-p4-next-revision "vc-p4-history")
+(autoload 'vc-p4-revision-completion-table "vc-p4-history")
+(autoload 'vc-p4-history--find-revision "vc-p4-history")
+(advice-add 'vc-find-revision :around #'vc-p4-history--find-revision)
 
 (advice-add 'basic-save-buffer :before #'vc-p4--check-operation-save)
 (advice-add 'vc-checkout :around #'vc-p4--vc-checkout)

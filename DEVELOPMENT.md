@@ -11,9 +11,9 @@ Validate other environments using the workspace smoke check.
 ## Checks
 
 - Warning-free byte compilation.
-- 94 backend/process/operation tests; 124 total including seven real diff-hl
-  consumer tests, ten incremental-rendering tests and thirteen fault/input tests.
-- 28 disposable-server tests covering actual metadata, byte retrieval, state,
+- 109 backend/process/operation/history tests; 141 total including seven real diff-hl
+  consumer tests, ten incremental-rendering tests and fifteen fault/input tests.
+- 29 disposable-server tests covering actual metadata, byte retrieval, state,
   mappings, native file operations and ten gutter scenarios. Run against both
   case-sensitive and case-insensitive servers; the alias-case assertion applies
   only to the latter.
@@ -29,6 +29,8 @@ Validate other environments using the workspace smoke check.
   against the server. Lifecycle checks cover noallwrite/allwrite, exclusive locks,
   permissions, literal special-character paths, opened/unopened/add/delete/move
   reverts, partial move failures, buffer names and final VC state.
+- Native history and revision views follow submitted branch/move ancestry to
+  known contents while preserving working-file bytes and opened actions.
 
 Run the tests without accessing a personal P4 server:
 
@@ -63,6 +65,17 @@ These are small-file batch command-loop measurements, not a large-workspace or
 GUI rendering benchmark. The GUI/private-workspace check remains in VALIDATION.md.
 
 ## Compatibility and remaining scope
+
+`vc-p4-history.el` adapts native VC file logs, revision lookup and completion to
+the shared asynchronous acquisition/cache. History uses full depot revision
+identities across moves/integrations and keeps changelists separately labeled.
+Read-only revision buffers retain the invoking workspace settings, detect text
+coding, and never create backup files beside the working file. Symbolic revision
+requests resolve to exact content identities; failed views can be retried.
+Pending view timers and native completion processes are bounded and discarded
+on buffer closure or configuration changes. Revision navigation follows the
+displayed filelog ancestry, skipping entries without content. Directory logs,
+submitted-changelist views and annotation are separate remaining work.
 
 The diff-hl source is unchanged. Backend acquisition remains in `vc-p4.el`;
 `vc-p4-gutter.el` handles completed-result validation and incremental display.
