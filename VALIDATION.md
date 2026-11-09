@@ -96,6 +96,8 @@ details. Revert only the disposable edit after checking.
    revision link. `M-x vc-p4-describe-change` also accepts `@number` directly.
    Verify that `g` refreshes these views using the same workspace context.
 6. Run `C-x v g` on a tracked text file. Check known line authors and dates;
+   the compact revision/change/author/date columns and `|` separators should
+   align. Hovering over a revision should reveal its full source depot path.
    `f` should open the exact originating revision, `l` its log and `C-c C-d`
    its submitted changelist. Use annotation's `p`/`n` to navigate and return.
    The initial target is HAVE, including when depot head is newer. Do not
@@ -107,6 +109,8 @@ details. Revert only the disposable edit after checking.
    should capture fresh working text. Native `C-x v =` retains its normal
    saved-file behaviour.
 8. Run `M-x vc-ediff` or `M-x vc-p4-ediff`. Expect separate snapshot buffers;
+   on a source file, both should use the language's major mode and normal
+   syntax highlighting, including your mode-hook customizations.
    working bytes and unsaved text must remain intact. Quit the session normally.
    Unchanged snapshots should disappear; edited snapshots should be retained.
    Moving away during pending acquisition must not open an obsolete session.

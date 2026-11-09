@@ -23,7 +23,7 @@
                      :data "literal\rinside\r\n" :metadata (cadr history))) t))
       (goto-char (point-min))
       (should (equal (vc-annotate-extract-revision-at-line) '("//depot/old.txt#2" . "/tmp/file")))
-      (should (string-match-p "//depot/old.txt#2 @20 bob .* | literal\rinside\n" (buffer-string)))
+      (should (string-match-p "#2 @20 bob .* | literal\rinside\n" (buffer-string)))
       (should (numberp (vc-p4-annotate-time)))
       (should (looking-at "literal"))
       (font-lock-ensure)
@@ -144,5 +144,37 @@
               (with-current-buffer log
                 (should (equal (log-view-current-tag) "//depot/old.txt#2")))))
         (kill-buffer log)))))
+
+(ert-deftest vc-p4-annotate-compact-columns-align-with-exact-source-navigation ()
+  (let* ((history (vc-p4-history--parse vc-p4-history-test-records))
+         (identities '("//depot/a/very/long/source-name.el#2" "//depot/x.el#123"))
+         (rows (list (list :identity (car identities) :change "20" :user "bob"
+                           :data "\tfirst\n" :metadata (car history))
+                     (list :identity (cadr identities) :change "123456" :user "long-user界"
+                           :data "second\n" :metadata (cadr history)))))
+    (with-temp-buffer
+      (vc-annotate-mode)
+      (let ((inhibit-read-only t))
+        (vc-p4-annotate--render "/tmp/file.el" "//depot/new.txt#1" history rows nil))
+      (goto-char (point-min))
+      (should (looking-at "#2 "))
+      (should-not (string-match-p "//depot/" (buffer-string)))
+      (let (separator-column)
+        (dolist (identity identities)
+          (should (equal (car (vc-p4-annotate-extract-revision-at-line)) identity))
+          (should (equal (get-text-property (point) 'help-echo) identity))
+          (search-forward " | ")
+          (if separator-column
+              (should (= (current-column) separator-column))
+            (setq separator-column (current-column)))
+          (forward-line 1)))
+      (font-lock-ensure)
+      (goto-char (point-min))
+      (vc-p4-annotate-time)
+      (should (looking-at "\tfirst"))
+      (should (get-text-property (point) 'face))
+      (vc-annotate-toggle-annotation-visibility)
+      (should (invisible-p (line-beginning-position)))
+      (should-not (invisible-p (point))))))
 
 (provide 'vc-p4-annotate-tests)

@@ -60,9 +60,11 @@
                 (goto-char (point-min))
                 (if (equal name "history-source.txt")
                     (progn
-                      (should (string-match-p "history-source.txt#2 .* bob .* | history two" (thing-at-point 'line t)))
+                      (should (equal (car (vc-annotate-extract-revision-at-line)) "//depot/history-source.txt#2"))
+                      (should (string-match-p "^#2 .* bob .* | history two" (thing-at-point 'line t)))
                       (forward-line 1)
-                      (should (string-match-p "history-source.txt#1 .* alice .* | shared original" (thing-at-point 'line t))))
+                      (should (equal (car (vc-annotate-extract-revision-at-line)) "//depot/history-source.txt#1"))
+                      (should (string-match-p "^#1 .* alice .* | shared original" (thing-at-point 'line t))))
                   (should (equal vc-buffer-revision "//depot/sample.txt#1"))
                   (should (string-match-p " | two\n" (buffer-string)))
                   (should-not (string-match-p "new depot line" (buffer-string))))))

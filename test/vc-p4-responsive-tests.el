@@ -86,7 +86,7 @@
                   (should buffer-read-only)
                   (should (string-match-p (pcase view
                                             ('revision "one\ntwo\nthree\n")
-                                            ('annotation "//test/file#1 @17 alice")
+                                            ('annotation "#1 @17 alice")
                                             (_ "Changelist: @17"))
                                           (buffer-string)))))
             (when (buffer-live-p output) (kill-buffer output))))))))

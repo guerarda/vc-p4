@@ -327,7 +327,10 @@
   (decode-coding-inserted-region (point-min) (point-max) file)
   (after-insert-file-set-coding (buffer-size))
   (let ((buffer-file-name file) (enable-local-variables nil))
-    (delay-mode-hooks (set-auto-mode))))
+    (delay-mode-hooks (set-auto-mode)))
+  ;; Select using the original filename, then finish setup as a non-file buffer.
+  ;; In particular, language and font-lock hooks must not remain deferred.
+  (run-mode-hooks))
 
 (defun vc-p4-history--find-revision (original file revision &optional backend)
   "Return an asynchronous P4 revision buffer, or call ORIGINAL for BACKEND."

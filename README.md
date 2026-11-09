@@ -120,6 +120,8 @@ In annotation, `f` opens a line's originating file revision, `l` shows its log,
 and `C-c C-d` describes its originating changelist. Native annotation's `p`/`n`
 commands browse older/newer revisions. The default is the file's HAVE revision;
 unsaved working edits remain intact.
+Columns show the compact `#revision`, `@changelist`, author and date. Hover over
+the revision for its full depot path; navigation retains that exact identity.
 
 Comparison prompts accept `#revision`, `//depot/path#revision` and `@changelist`.
 Leave the first operand empty for each file's HAVE revision, and the second for

@@ -236,4 +236,31 @@
        (when (buffer-live-p control) (with-current-buffer control (ediff-really-quit nil)))
        (when (buffer-live-p variant) (kill-buffer variant))))))
 
+(ert-deftest vc-p4-ediff-snapshots-finish-language-mode-and-fontification ()
+  (require 'ediff)
+  (let* ((ediff-window-setup-function #'ediff-setup-windows-plain)
+         (hook-files nil)
+         (emacs-lisp-mode-hook
+          (list (lambda () (push buffer-file-name hook-files))))
+         control)
+    (save-window-excursion
+      (unwind-protect
+          (progn
+            (setq control
+                  (vc-p4-compare--ediff-buffers
+                   "/tmp/p4-language.el"
+                   (list (list :bytes "(defun example () \"old\")\n" :label "#1")
+                         (list :bytes "(defun example () \"new\")\n" :label "working"))))
+            (should (equal hook-files '(nil nil)))
+            (with-current-buffer control
+              (dolist (variant (list ediff-buffer-A ediff-buffer-B))
+                (with-current-buffer variant
+                  (should (eq major-mode 'emacs-lisp-mode))
+                  (should-not buffer-file-name)
+                  (should-not delayed-mode-hooks)
+                  (font-lock-ensure)
+                  (should (eq (get-text-property 2 'face) 'font-lock-keyword-face))))))
+        (when (buffer-live-p control)
+          (with-current-buffer control (ediff-really-quit nil)))))))
+
 (provide 'vc-p4-compare-tests)

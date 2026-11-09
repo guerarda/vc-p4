@@ -42,24 +42,36 @@
               vc-annotate-parent-file file
               vc-annotate-parent-rev target
               vc-p4-annotate--snapshot (list :file file :context (vc-p4--context file) :history history))
-  (dolist (row rows)
-    (let* ((beginning (point))
-           (identity (plist-get row :identity))
-           (change (plist-get row :change))
-           (metadata (plist-get row :metadata))
-           (time (string-to-number (plist-get metadata :time)))
-           (body (plist-get row :data)))
-      (insert identity " ")
-      (insert-text-button (concat "@" change) 'follow-link t
-                          'action (lambda (_) (vc-p4-describe-change change file)))
-      (insert " " (plist-get row :user) " " (format-time-string "%Y-%m-%d" time t) " | ")
-      (let ((prefix-end (point)))
-        (insert (if (and dos (string-suffix-p "\r\n" body))
-                    (concat (substring body 0 -2) "\n") body))
-        (add-text-properties beginning (point)
-                             (list 'vc-p4-annotation
-                                   (list :identity identity :change change :file file
-                                         :time time :prefix-end prefix-end))))))
+  (let* ((columns
+          (mapcar (lambda (row)
+                    (list (replace-regexp-in-string "\\`.*\\(#[0-9]+\\)\\'" "\\1"
+                                                    (plist-get row :identity))
+                          (concat "@" (plist-get row :change))
+                          (plist-get row :user))) rows))
+         (formats
+          (mapcar (lambda (index)
+                    (format "%%-%ds"
+                            (apply #'max 1 (mapcar (lambda (fields) (string-width (nth index fields)))
+                                                   columns)))) '(0 1 2))))
+    (cl-loop for row in rows for fields in columns do
+             (let* ((beginning (point))
+                    (identity (plist-get row :identity))
+                    (change (plist-get row :change))
+                    (metadata (plist-get row :metadata))
+                    (time (string-to-number (plist-get metadata :time)))
+                    (body (plist-get row :data)))
+               (insert (propertize (format (nth 0 formats) (nth 0 fields)) 'help-echo identity) " ")
+               (insert-text-button (format (nth 1 formats) (nth 1 fields)) 'follow-link t
+                                   'action (lambda (_) (vc-p4-describe-change change file)))
+               (insert " " (format (nth 2 formats) (nth 2 fields)) " "
+                       (format-time-string "%Y-%m-%d" time t) " | ")
+               (let ((prefix-end (point)))
+                 (insert (if (and dos (string-suffix-p "\r\n" body))
+                             (concat (substring body 0 -2) "\n") body))
+                 (add-text-properties beginning (point)
+                                      (list 'vc-p4-annotation
+                                            (list :identity identity :change change :file file
+                                                  :time time :prefix-end prefix-end)))))))
   (vc-p4-annotation-mode 1))
 
 (defun vc-p4-annotate-command (file buffer &optional revision)
