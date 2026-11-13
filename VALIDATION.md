@@ -175,6 +175,28 @@ during visit, save, refresh or concurrent external work. For discovery failures,
 `M-: vc-p4-last-error` and sanitize server/user/path details before sharing.
 If GUI rendering is wrong, describe the marker and line position.
 
+## Offline pipe resource diagnostic
+
+If Windows reports `Creating pipe: Too many open files`, run this from the
+repository directory in a separate command prompt, adjusting the Emacs path:
+
+```bat
+"C:\Program Files\Emacs\emacs-30.2\bin\emacs.exe" -Q --batch --eval "(setq load-prefer-newer t)" -L . -L test -l vc-p4-resource-tests -f ert-run-tests-batch-and-exit > "%TEMP%\vc-p4-resource-check.log" 2>&1
+```
+
+This runs five offline tests with 120 cycles each: native pipe deletion,
+native subprocess completion, and vc-p4 worker completion, cancellation and
+launch failure. Commands use harmless shell builtins, without contacting P4
+or invoking a build. The separate process does not alter the running session.
+On systems with make, the equivalent is `make test-resources`.
+
+Report the first failing test and cycle from `%TEMP%\vc-p4-resource-check.log`. If a native
+test fails, the failure can reproduce without vc-p4's worker lifecycle. If only
+a runner test fails, that narrows the relevant package path. Passing tests do
+not rule out a workload-specific leak; `list-processes` alone cannot measure
+all native descriptors. Run individual selectors in fresh Emacs processes when
+an earlier failure has exhausted resources for later tests.
+
 ## Rollback
 
 Remove the load snippet if you made it persistent and restart Emacs. A restart

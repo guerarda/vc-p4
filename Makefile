@@ -3,7 +3,7 @@ PYTHON ?= python3
 FLYCHECK_DIR ?=
 DIFF_HL_DIR ?=
 
-.PHONY: check compile test test-diff-hl test-flycheck integration clean
+.PHONY: check compile test test-diff-hl test-flycheck test-resources integration clean
 check: compile test
 compile:
 	$(EMACS) -Q --batch -L . --eval '(setq byte-compile-error-on-warn t)' -f batch-byte-compile vc-p4.el vc-p4-ops.el vc-p4-gutter.el vc-p4-history.el vc-p4-annotate.el vc-p4-compare.el
@@ -15,6 +15,8 @@ test-diff-hl:
 test-flycheck:
 	@test -n "$(DIFF_HL_DIR)" -a -n "$(FLYCHECK_DIR)" || (echo 'Set DIFF_HL_DIR and FLYCHECK_DIR'; exit 1)
 	$(EMACS) -Q --batch --eval '(setq load-prefer-newer t)' -L . -L test -L '$(DIFF_HL_DIR)' -L '$(FLYCHECK_DIR)' -l vc-p4-flycheck-tests --eval '(ert-run-tests-batch-and-exit "vc-p4-flycheck")'
+test-resources:
+	$(EMACS) -Q --batch --eval '(setq load-prefer-newer t)' -L . -L test -l vc-p4-resource-tests -f ert-run-tests-batch-and-exit
 integration:
 	$(PYTHON) scripts/p4_fixture.py --emacs '$(EMACS)'
 clean:

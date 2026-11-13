@@ -75,6 +75,13 @@ GUI rendering benchmark. The GUI/private-workspace check remains in VALIDATION.m
 
 ## Compatibility and remaining scope
 
+`make test-resources` runs a separate offline lifetime diagnostic with 120
+cycles per phase: native pipes/subprocesses and runner completion, cancellation
+and launch failure. It uses shell builtins rather than a P4 server. Native
+Windows pipe reader retirement differs from Unix; successful Unix resource
+checks do not establish Windows cleanup correctness. See VALIDATION.md for the
+Windows batch command and how to interpret the first failure.
+
 `vc-p4-history.el` adapts native VC file logs, revision lookup and completion to
 the shared asynchronous acquisition/cache. History uses full depot revision
 identities across moves/integrations and keeps changelists separately labeled.
