@@ -679,3 +679,32 @@
           (should (vc-p4--diff-task-done task))
           (should-not (process-live-p (vc-p4--diff-task-gate task)))
           (should-not vc-p4--diff-tasks))))))
+
+(ert-deftest vc-p4-startup-failure-waits-for-unused-windows-pipe ()
+  (dolist (platform '(windows-nt darwin))
+    (dolist (failure '(quit error))
+      (let* ((vc-p4--active nil) (vc-p4--queue nil)
+             (callbacks 0) waits
+             (job (vc-p4--make-job
+                   :directory temporary-file-directory
+                   :environment process-environment :exec-path exec-path
+                   :command '("unused")
+                   :callback (lambda (_) (cl-incf callbacks)))))
+        (cl-letf (((symbol-function 'make-process)
+                   (lambda (&rest _) (signal failure nil)))
+                  ((symbol-function 'accept-process-output)
+                   (lambda (pipe &rest args)
+                     (should (process-live-p pipe))
+                     (push (cons pipe args) waits))))
+          (let ((system-type platform)) (vc-p4--start job)))
+        (should (= callbacks 1))
+        (should (eq (plist-get (vc-p4--job-result job) :status)
+                    (if (eq failure 'quit) 'cancelled 'error)))
+        (should (equal waits
+                       (when (eq platform 'windows-nt)
+                         (list (list (vc-p4--job-stderr-process job)
+                                     0.001 nil 1)))))
+        (should-not (process-live-p (vc-p4--job-stderr-process job)))
+        (should-not (buffer-live-p (vc-p4--job-output job)))
+        (should-not (buffer-live-p (vc-p4--job-errors job)))
+        (should-not vc-p4--active)))))

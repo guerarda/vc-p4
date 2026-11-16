@@ -65,6 +65,16 @@ Release all resources before delivering the result to its callback."
                             (vc-p4--job-stderr-process job)))
         (when (processp process)
           (set-process-sentinel process #'ignore)
+          ;; Native Windows Emacs can leak descriptors when an unused pipe
+          ;; is deleted before its reader thread starts.  Give that thread
+          ;; a chance to start after interrupted/failed subprocess creation.
+          ;; A zero timeout does not help; restrict this wait to this pipe
+          ;; and inhibit timers.  This is a timing-based workaround.
+          (when (and (eq system-type 'windows-nt)
+                     (null (vc-p4--job-process job))
+                     (eq process (vc-p4--job-stderr-process job))
+                     (process-live-p process))
+            (accept-process-output process 0.001 nil 1))
           (delete-process process)))
       (dolist (buffer (list (vc-p4--job-output job) (vc-p4--job-errors job)))
         (when (buffer-live-p buffer) (kill-buffer buffer)))
